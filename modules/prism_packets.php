@@ -2528,14 +2528,19 @@ $INST = array(INST_ALWAYS_ON => 'INST_ALWAYS_ON');
 
 // BStyle byte : style flags for the button
 
-define('ISB_C1',		1);			// you can choose a standard
-define('ISB_C2',		2);			// interface colour using
-define('ISB_C4',		4);			// these 3 lowest bits - see below
-define('ISB_CLICK',		8);			// click this button to send IS_BTC
-define('ISB_LIGHT',		16);		// light button
-define('ISB_DARK',		32);		// dark button
-define('ISB_LEFT',		64);		// align text to left
-define('ISB_RIGHT',		128);		// align text to right
+define('ISB_C0',     0);     // Light grey
+define('ISB_C1',     1);     // you can choose a standard | Title color
+define('ISB_C2',     2);     // interface colour using | Unselected text
+define('ISB_C3',     3);     // Selected text
+define('ISB_C4',     4);     // these 3 lowest bits - see below | OK
+define('ISB_C5',     5);     // Cancel
+define('ISB_C6',     6);     // Text string
+define('ISB_C7',     7);     // Unavailable
+define('ISB_CLICK',  8);     // click this button to send IS_BTC
+define('ISB_LIGHT',  16);    // light button
+define('ISB_DARK',   32);    // dark button
+define('ISB_LEFT',   64);    // align text to left
+define('ISB_RIGHT',  128);   // align text to right
 
 // colour 0 : light grey		(not user editable)
 // colour 1 : title colour		(default:yellow)
