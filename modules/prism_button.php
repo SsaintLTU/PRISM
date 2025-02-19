@@ -13,12 +13,13 @@ class Button extends IS_BTN
     public static $TO_ALL = 255;
     public static $TO_LOCAL = 0;
 
-    public function __construct($UCID = 0, $key = NULL, $group = NULL)
+    public function __construct($UCID = 0, $key = NULL, $group = NULL, $inst = NULL)
     {
         $this->key = $key;
         $this->group = $group;
         $this->UCID = $UCID;
         $this->ClickID = -1;
+        $this->Inst = ($inst !== NULL) ? INST_ALWAYS_ON : NULL;
     }
 
     public function send($hostId = NULL)
