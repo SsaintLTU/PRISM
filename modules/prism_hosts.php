@@ -743,6 +743,7 @@ class InsimConnection
     private $specPass        = '';            # specpass for relay usage
     private $pps            = 3;
     private $hostName        = '';            # the hostname. Can be populated by user in case of relay.
+    private $prefix        = '';
 
     public function __construct(array &$icVars)
     {
