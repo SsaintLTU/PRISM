@@ -471,7 +471,7 @@ class PlayerHandler extends PropertyMaster
 {
     public static $handles = array(
         ISP_NPL => '__construct',    # 21
-        ISP_PLL => '__destruct',    # 23
+        ISP_PLL => 'onLeave',    # 23
         ISP_PLP => 'onPits',        # 22
         ISP_FIN => 'onFinished',    # 34
         ISP_RES => 'onResult',        # 35
@@ -507,8 +507,12 @@ class PlayerHandler extends PropertyMaster
 
     public function __destruct()
     {
-        foreach ($this as $key => $value)
-        {
+        $this->cleanup();
+    }
+
+    private function cleanup()
+    {
+        foreach ($this as $key => $value) {
             unset($this->$key);
         }
     }
@@ -535,6 +539,28 @@ class PlayerHandler extends PropertyMaster
     public function onPits(IS_PLP $PLP)
     {
         $this->inPits = TRUE;
+    }
+
+    public function onLeave(IS_PLL $PLL)
+    {
+        $parent = $this->parent ?? null;
+        $ucid = $this->UCID ?? null;
+        $plid = $PLL->PLID;
+
+        if ($parent !== null) {
+            if ($ucid !== null
+                && isset($parent->clients[$ucid])
+                && isset($parent->clients[$ucid]->players[$plid])
+                && $parent->clients[$ucid]->players[$plid] === $this) {
+                unset($parent->clients[$ucid]->players[$plid]);
+            }
+
+            if (isset($parent->players[$plid]) && $parent->players[$plid] === $this) {
+                unset($parent->players[$plid]);
+            }
+        }
+
+        $this->cleanup();
     }
 
     # Special case, handled within the parent class's onPlayerPacket method.
