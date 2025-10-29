@@ -471,16 +471,17 @@ class HostHandler extends SectionHandler
         {
             if ($PRISM->config->cvars['debugMode'] & (PRISM_DEBUG_CORE + PRISM_DEBUG_MODULES))
             {
+                $memoryUsage = round(memory_get_usage() / 1024 / 1024, 2);
                 switch ($pH['Type'])
                 {
                     case ISP_TINY:
-                        console("< {$TINY[$pH['SubT']]} Packet from {$hostID}.");
+                        console(date('i:s') . '|<' . $memoryUsage . "M< {$TINY[$pH['SubT']]} Packet from {$hostID}.");
                     break;
                     case ISP_SMALL:
-                        console("< {$SMALL[$pH['SubT']]} Packet from {$hostID}.");
+                        console(date('i:s') . '|<' . $memoryUsage . "M< {$SMALL[$pH['SubT']]} Packet from {$hostID}.");
                     break;
                     default:
-                        console("< {$TYPEs[$pH['Type']]} Packet from {$hostID}.");
+                        console(date('i:s') . '|<' . $memoryUsage . "M< {$TYPEs[$pH['Type']]} Packet from {$hostID}.");
                 }
             }
             $packet = new $TYPEs[$pH['Type']]($rawPacket);
@@ -638,16 +639,17 @@ class HostHandler extends SectionHandler
         global $PRISM, $TYPEs, $TINY, $SMALL;
         if ($PRISM->config->cvars['debugMode'] & (PRISM_DEBUG_CORE + PRISM_DEBUG_MODULES))
         {
+            $memoryUsage = round(memory_get_usage() / 1024 / 1024, 2);
             switch ($packetClass->Type)
             {
                 case ISP_TINY:
-                    console("> {$TINY[$packetClass->SubT]} Packet to {$hostId}.");
+                    console(date('i:s') . '|>' . $memoryUsage . "M> {$TINY[$packetClass->SubT]} Packet to {$hostId}.");
                 break;
                 case ISP_SMALL:
-                    console("> {$SMALL[$packetClass->SubT]} Packet to {$hostId}.");
+                    console(date('i:s') . '|>' . $memoryUsage . "M> {$SMALL[$packetClass->SubT]} Packet to {$hostId}.");
                 break;
                 default:
-                    console("> {$TYPEs[$packetClass->Type]} Packet to {$hostId}.");
+                    console(date('i:s') . '|>' . $memoryUsage . "M> {$TYPEs[$packetClass->Type]} Packet to {$hostId}.");
             }
         }
 
