@@ -135,6 +135,8 @@ class StateHandler extends PropertyMaster
 
 
     // Extrinsic Properties
+    protected $PLID;
+
     public $clients = array();
     public $players = array();        # By design there is one here and a refrence to this in the $this->clients[UCID]->players[PLID] array.
 
@@ -384,6 +386,8 @@ class ClientHandler extends PropertyMaster
         ISP_NCI => 'onClientInfo'    # 57
     );
     public $players = array();
+    private $parent;
+    private $PRISM = false;
 
     public function dispatchPacket(Struct $Packet)
     {
@@ -498,6 +502,8 @@ class PlayerHandler extends PropertyMaster
     public $inPits;            # For when a player is in our list, but not on track this is TRUE.
 
     // Constructor
+    private $parent;
+
     public function __construct(IS_NPL $NPL, StateHandler $parent)
     {
         $this->parent = $parent;

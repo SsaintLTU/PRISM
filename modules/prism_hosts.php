@@ -463,7 +463,7 @@ class HostHandler extends SectionHandler
             return;
         }
 
-        $this->curHostId = $hostID; # To make sure we always know what host we are talking to, making the sendPacket function useful everywhere.
+        $this->curHostID = $hostID; # To make sure we always know what host we are talking to, making the sendPacket function useful everywhere.
 
         # Parse Packet Header
         $pH = unpack('CSize/CType/CReqI/CSubT', $rawPacket);
@@ -583,15 +583,22 @@ class HostHandler extends SectionHandler
 
     public function sendPacket(Struct $packetClass, $hostId = NULL)
     {
-        if ($hostId === NULL)
+        if ($hostId === NULL) {
             $hostId = $this->curHostID;
+        }
 
-        $host = $this->hosts[$hostId];
+        if ($hostId === NULL && !empty($this->hosts)) {
+            $hostId = array_key_first($this->hosts);
+        }
 
-        if($host == null){
+        if ($hostId === NULL || !isset($this->hosts[$hostId])) {
             trigger_error('Attempted to check on invalid host.', E_USER_WARNING);
             return FALSE;
         }
+
+        $host = $this->hosts[$hostId];
+
+        $this->curHostID = $hostId;
 
         if ($host->isRelay())
         {
@@ -721,6 +728,7 @@ class InsimConnection
     private $connTime        = 0;
     private $lastReadTime    = 0;
     private $lastWriteTime    = 0;
+    private $lastActivity     = 0;
 
     // TCP stream buffer
     private $streamBuf        = '';
