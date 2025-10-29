@@ -8,6 +8,29 @@
 /* Start of PRISM PACKET HEADER */
 abstract class Struct
 {
+    protected static function usesWordSizedPackets()
+    {
+        return defined('INSIM_VERSION') && INSIM_VERSION >= 9;
+    }
+
+    public static function encodePacketSize($byteCount)
+    {
+        if (self::usesWordSizedPackets()) {
+            return intdiv($byteCount, 4);
+        }
+
+        return $byteCount;
+    }
+
+    public static function decodePacketSize($sizeField)
+    {
+        if (self::usesWordSizedPackets()) {
+            return $sizeField * 4;
+        }
+
+        return $sizeField;
+    }
+
     public function __conStruct($rawPacket = null)
     {
         if ($rawPacket !== null) {
@@ -121,6 +144,9 @@ abstract class Struct
             if(is_string($value)) {
                 $value = trim($value);
             }
+            if ($property === 'Size') {
+                $value = self::decodePacketSize($value);
+            }
             $this->$property = $value;
         }
 
@@ -149,6 +175,10 @@ abstract class Struct
                     }
                 }
             } else {
+                if ($property == 'Size') {
+                    $value = self::encodePacketSize($value);
+                }
+
                 $return .= pack($pkFnkFormat, $value);
             }
         }
@@ -2183,6 +2213,9 @@ class IS_JRR extends Struct // Join Request Reply - send one of these back to LF
                     }
                 }
             } else {
+                if ($property == 'Size') {
+                    $value = self::encodePacketSize($value);
+                }
                 $return .= pack($pkFnkFormat, $value);
             }
         }
@@ -2904,7 +2937,7 @@ class IS_AIC extends Struct
         $this->Inputs = $normalised;
         $this->Size = 4 + (count($this->Inputs) * 4);
 
-        $buffer = pack('CCCC', $this->Size, $this->Type, $this->ReqI, $this->PLID);
+        $buffer = pack('CCCC', self::encodePacketSize($this->Size), $this->Type, $this->ReqI, $this->PLID);
 
         foreach ($this->Inputs as $input) {
             $buffer .= $input->pack();
@@ -2918,6 +2951,9 @@ class IS_AIC extends Struct
         $header = unpack($this::UNPACK, substr($rawPacket, 0, 4));
 
         foreach ($header as $property => $value) {
+            if ($property === 'Size') {
+                $value = self::decodePacketSize($value);
+            }
             $this->$property = $value;
         }
 

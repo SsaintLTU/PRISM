@@ -1305,22 +1305,23 @@ class InsimConnection
             return FALSE;
 
         $sizebyte = ord($this->streamBuf[0]);
-        if ($sizebyte == 0)
+        $packetSize = Struct::decodePacketSize($sizebyte);
+        if ($packetSize == 0)
         {
             return FALSE;
         }
-        else if ($this->streamBufLen < $sizebyte)
+        else if ($this->streamBufLen < $packetSize)
         {
             //console('Split packet ...');
             return FALSE;
         }
 
         // We should have a whole packet in the buffer now
-        $packet                    = substr($this->streamBuf, 0, $sizebyte);
+        $packet                    = substr($this->streamBuf, 0, $packetSize);
         $packetType                = ord($packet[1]);
 
         // Cleanup streamBuffer
-        $this->streamBuf        = substr($this->streamBuf, $sizebyte);
+        $this->streamBuf        = substr($this->streamBuf, $packetSize);
         $this->streamBufLen        = strlen($this->streamBuf);
 
         return $packet;
