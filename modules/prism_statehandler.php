@@ -73,18 +73,21 @@ class StateHandler extends PropertyMaster
 
         if ($Packet instanceof IS_NCN) {
             $this->clients[$Packet->UCID] = new ClientHandler($Packet, $this);
-        } else {
-            # Check to make sure we have a client.
-            if (!isset($this->clients[$Packet->UCID])) {
-                return;
-            }
-            
-            if ($Packet instanceof ISP_CNL) {
-                ButtonManager::clearButtonsForConn($Packet->UCID);
-            }
-
-            $this->clients[$Packet->UCID]->{ClientHandler::$handles[$Packet->Type]}($Packet);
+            return;
         }
+
+        # Check to make sure we have a client.
+        if (!isset($this->clients[$Packet->UCID])) {
+            return;
+        }
+
+        if ($Packet instanceof ISP_CNL) {
+            ButtonManager::clearButtonsForConn($Packet->UCID);
+            $this->removeClientById($Packet->UCID);
+            return;
+        }
+
+        $this->clients[$Packet->UCID]->{ClientHandler::$handles[$Packet->Type]}($Packet);
     }
 
     // Player handles
@@ -139,6 +142,35 @@ class StateHandler extends PropertyMaster
 
     public $clients = array();
     public $players = array();        # By design there is one here and a refrence to this in the $this->clients[UCID]->players[PLID] array.
+
+    private function removeClientById($ucid)
+    {
+        if (!isset($this->clients[$ucid])) {
+            return;
+        }
+
+        $client = $this->clients[$ucid];
+
+        if (!empty($client->players)) {
+            foreach (array_keys($client->players) as $plid) {
+                if (isset($this->players[$plid]) && $this->players[$plid] instanceof PlayerHandler) {
+                    $this->players[$plid]->detach();
+                } elseif (isset($client->players[$plid])) {
+                    unset($client->players[$plid]);
+                }
+            }
+        }
+
+        if ($client instanceof ClientHandler) {
+            $client->detach();
+        }
+
+        unset($this->clients[$ucid]);
+
+        if (function_exists('gc_collect_cycles')) {
+            gc_collect_cycles();
+        }
+    }
 
     // Constructor
     public function __construct()
@@ -434,6 +466,16 @@ class ClientHandler extends PropertyMaster
 
     public function __destruct()
     {
+        $this->cleanup();
+    }
+
+    public function detach()
+    {
+        $this->cleanup();
+    }
+
+    private function cleanup()
+    {
         foreach ($this as $key => $value)
         {
             unset($this->$key);
@@ -503,6 +545,7 @@ class PlayerHandler extends PropertyMaster
 
     // Constructor
     private $parent;
+    private $PLID;
 
     public function __construct(IS_NPL $NPL, StateHandler $parent)
     {
@@ -525,6 +568,7 @@ class PlayerHandler extends PropertyMaster
 
     private function onNPL(IS_NPL $NPL)
     {
+        $this->PLID = $NPL->PLID;
         $this->UCID = $NPL->UCID;
         $this->PType = $NPL->PType;
         $this->Flags = $NPL->Flags;
@@ -549,21 +593,16 @@ class PlayerHandler extends PropertyMaster
 
     public function onLeave(IS_PLL $PLL)
     {
-        $parent = $this->parent ?? null;
-        $ucid = $this->UCID ?? null;
-        $plid = $PLL->PLID;
+        $this->detachFromParent($PLL->PLID);
+        $this->cleanup();
+    }
 
-        if ($parent !== null) {
-            if ($ucid !== null
-                && isset($parent->clients[$ucid])
-                && isset($parent->clients[$ucid]->players[$plid])
-                && $parent->clients[$ucid]->players[$plid] === $this) {
-                unset($parent->clients[$ucid]->players[$plid]);
-            }
+    public function detach()
+    {
+        $plid = $this->PLID ?? null;
 
-            if (isset($parent->players[$plid]) && $parent->players[$plid] === $this) {
-                unset($parent->players[$plid]);
-            }
+        if ($plid !== null) {
+            $this->detachFromParent($plid);
         }
 
         $this->cleanup();
@@ -580,6 +619,27 @@ class PlayerHandler extends PropertyMaster
         $this->UCID = $TOC->NewUCID;
         $this->UName = $this->parent->clients[$TOC->NewUCID]->UName;
         $this->PName = $this->parent->clients[$TOC->NewUCID]->PName;
+    }
+
+    private function detachFromParent($plid)
+    {
+        $parent = $this->parent ?? null;
+        $ucid = $this->UCID ?? null;
+
+        if ($parent === null || $plid === null) {
+            return;
+        }
+
+        if ($ucid !== null
+            && isset($parent->clients[$ucid])
+            && isset($parent->clients[$ucid]->players[$plid])
+            && $parent->clients[$ucid]->players[$plid] === $this) {
+            unset($parent->clients[$ucid]->players[$plid]);
+        }
+
+        if (isset($parent->players[$plid]) && $parent->players[$plid] === $this) {
+            unset($parent->players[$plid]);
+        }
     }
 
     protected $finished = FALSE;
