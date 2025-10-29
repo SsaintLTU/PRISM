@@ -2846,6 +2846,204 @@ define('PMO_AVOID_CHECK',		8);
 
 // NOTE : OutGauge packets are not InSim packets and don't have a 4-byte header.
 
+// AI CONTROL
+// ==========
+
+define('AIC_MAX_INPUTS', 20);
+
+class AIInputVal extends Struct
+{
+    const PACK = 'CCv';
+    const UNPACK = 'CInput/CTime/vValue';
+
+    public $Input = 0;
+    public $Time = 0;
+    public $Value = 0;
+
+    public function __construct($rawPacket = null)
+    {
+        parent::__construct($rawPacket);
+    }
+}
+
+class IS_AIC extends Struct
+{
+    const PACK = 'CCCC';
+    const UNPACK = 'CSize/CType/CReqI/CPLID';
+
+    protected $Size = 4;        # 4 + 4 * (number of inputs)
+    protected $Type = ISP_AIC;  # ISP_AIC
+    public $ReqI = 0;           # Optional - returned in replies to CS_SEND_AI_INFO
+    public $PLID = 0;           # Unique ID of AI driver to control
+
+    public $Inputs = array();
+
+    public function addInput(AIInputVal $input)
+    {
+        $this->Inputs[] = $input;
+
+        return $this;
+    }
+
+    public function pack()
+    {
+        $normalised = array();
+
+        foreach ($this->Inputs as $input) {
+            if (!($input instanceof AIInputVal) && is_array($input) && isset($input['Input'], $input['Time'], $input['Value'])) {
+                $tmp = new AIInputVal();
+                $tmp->Input($input['Input'])->Time($input['Time'])->Value($input['Value']);
+                $input = $tmp;
+            }
+
+            if ($input instanceof AIInputVal) {
+                $normalised[] = $input;
+            }
+        }
+
+        $this->Inputs = $normalised;
+        $this->Size = 4 + (count($this->Inputs) * 4);
+
+        $buffer = pack('CCCC', $this->Size, $this->Type, $this->ReqI, $this->PLID);
+
+        foreach ($this->Inputs as $input) {
+            $buffer .= $input->pack();
+        }
+
+        return $buffer;
+    }
+
+    public function unpack($rawPacket)
+    {
+        $header = unpack($this::UNPACK, substr($rawPacket, 0, 4));
+
+        foreach ($header as $property => $value) {
+            $this->$property = $value;
+        }
+
+        $this->Inputs = array();
+        $offset = 4;
+
+        while ($offset < $this->Size) {
+            $this->Inputs[] = new AIInputVal(substr($rawPacket, $offset, 4));
+            $offset += 4;
+        }
+
+        return $this;
+    }
+}; function IS_AIC() { return new IS_AIC; }
+
+define('CS_MSX',             0);
+define('CS_THROTTLE',        1);
+define('CS_BRAKE',           2);
+define('CS_CHUP',            3);
+define('CS_CHDN',            4);
+define('CS_IGNITION',        5);
+define('CS_EXTRALIGHT',      6);
+define('CS_HEADLIGHTS',      7);
+define('CS_SIREN',           8);
+define('CS_HORN',            9);
+define('CS_FLASH',          10);
+define('CS_CLUTCH',         11);
+define('CS_HANDBRAKE',      12);
+define('CS_INDICATORS',     13);
+define('CS_GEAR',           14);
+define('CS_LOOK',           15);
+define('CS_PITSPEED',       16);
+define('CS_TCDISABLE',      17);
+define('CS_FOGREAR',        18);
+define('CS_FOGFRONT',       19);
+define('CS_SEND_AI_INFO',  240);
+define('CS_REPEAT_AI_INFO',241);
+define('CS_SET_HELP_FLAGS',253);
+define('CS_RESET_INPUTS',  254);
+define('CS_STOP_CONTROL',  255);
+
+define('AIFLAGS_IGNITION', 1);
+define('AIFLAGS_CHUP',     4);
+define('AIFLAGS_CHDN',     8);
+
+class IS_AII extends Struct
+{
+    const PACK = 'CCCC';
+    const UNPACK = 'CSize/CType/CReqI/CPLID';
+
+    protected $Size = 96;       # 96
+    protected $Type = ISP_AII;  # ISP_AII
+    public $ReqI;               # ReqI from SMALL_AII or CS_SEND_AI_INFO
+    public $PLID;               # Unique ID of the AI driver
+
+    public $OSData = array();
+    public $Flags;
+    public $Gear;
+    protected $Sp2;
+    protected $Sp3;
+    public $RPM;
+    public $SpF0;
+    public $SpF1;
+    public $ShowLights;
+    public $SPU1;
+    public $SPU2;
+    public $SPU3;
+
+    public function unpack($rawPacket)
+    {
+        $header = unpack($this::UNPACK, substr($rawPacket, 0, 4));
+
+        foreach ($header as $property => $value) {
+            $this->$property = $value;
+        }
+
+        $offset = 4;
+
+        $motion = unpack(
+            'fAngVelX/fAngVelY/fAngVelZ/' .
+            'fHeading/fPitch/fRoll/' .
+            'fAccelX/fAccelY/fAccelZ/' .
+            'fVelX/fVelY/fVelZ',
+            substr($rawPacket, $offset, 48)
+        );
+
+        $offset += 48;
+
+        $pos = unpack('lPosX/lPosY/lPosZ', substr($rawPacket, $offset, 12));
+        $offset += 12;
+
+        $state = unpack('CFlags/CGear/CSp2/CSp3', substr($rawPacket, $offset, 4));
+        $offset += 4;
+
+        $engine = unpack('fRPM/fSpF0/fSpF1', substr($rawPacket, $offset, 12));
+        $offset += 12;
+
+        $lights = unpack('VShowLights/VSPU1/VSPU2/VSPU3', substr($rawPacket, $offset, 16));
+
+        $this->Flags = $state['Flags'];
+        $this->Gear = $state['Gear'];
+        $this->Sp2 = $state['Sp2'];
+        $this->Sp3 = $state['Sp3'];
+        $this->RPM = $engine['RPM'];
+        $this->SpF0 = $engine['SpF0'];
+        $this->SpF1 = $engine['SpF1'];
+        $this->ShowLights = $lights['ShowLights'];
+        $this->SPU1 = $lights['SPU1'];
+        $this->SPU2 = $lights['SPU2'];
+        $this->SPU3 = $lights['SPU3'];
+
+        $this->OSData = array(
+            'AngVel' => array('X' => $motion['AngVelX'], 'Y' => $motion['AngVelY'], 'Z' => $motion['AngVelZ']),
+            'Heading' => $motion['Heading'],
+            'Pitch' => $motion['Pitch'],
+            'Roll' => $motion['Roll'],
+            'Accel' => array('X' => $motion['AccelX'], 'Y' => $motion['AccelY'], 'Z' => $motion['AccelZ']),
+            'Vel' => array('X' => $motion['VelX'], 'Y' => $motion['VelY'], 'Z' => $motion['VelZ']),
+            'Pos' => array('X' => $pos['PosX'], 'Y' => $pos['PosY'], 'Z' => $pos['PosZ']),
+        );
+
+        return $this;
+    }
+}; function IS_AII() { return new IS_AII; }
+
+
 
 // CAMERA CONTROL
 // ==============
