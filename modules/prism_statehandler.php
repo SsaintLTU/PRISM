@@ -178,6 +178,9 @@ class StateHandler extends PropertyMaster
         global $PRISM;
         # Send out some info requests
         $ISP = IS_TINY()->ReqI(1);
+        $currentHost = $PRISM->hosts->getHostById();
+        $isRelayHost = (is_object($currentHost) && method_exists($currentHost, 'isRelay')) ? $currentHost->isRelay() : false;
+        $isLocalHost = (is_object($currentHost) && method_exists($currentHost, 'getFlags')) ? (($currentHost->getFlags() & ISF_LOCAL) !== 0) : false;
         // Request every bit of information we can get.
         // This becomes our baseline that we use and update as needed.
         # Get the most about of information as fast as we can.
@@ -185,7 +188,7 @@ class StateHandler extends PropertyMaster
         # Get information on the clients & players, and their current race state.
         $ISP->SubT(TINY_SST)->Send();    # Send STate info (ISP_STA)
         $ISP->SubT(TINY_NCN)->Send();    # get all connections (ISP_NCN)
-        if(($PRISM->hosts->getHostById()->getFlags() & ISF_LOCAL) == 0) {
+        if(!$isLocalHost) {
             #TINY_NCI is only supported in MultiPlayer
             console('Not local; requesting TINY_NCI');
             $ISP->SubT(TINY_NCI)->Send();    # get NCI for all guests (ISP_NCN)
@@ -199,10 +202,14 @@ class StateHandler extends PropertyMaster
         $ISP->SubT(TINY_RST)->Send();    # send an IS_RST (ISP_RST)
         $ISP->SubT(TINY_AXI)->Send();    # send an IS_AXI - AutoX Info (ISP_AXI)
 
-        if (!$PRISM->hosts->getHostById()->isRelay()) {
+        if (!$isRelayHost) {
             $ISP->SubT(TINY_NLP)->Send();    # send an IS_NLP (ISP_NLP)
             $ISP->SubT(TINY_MCI)->Send();    # send an IS_MCI (ISP_MCI)
-            $ISP->SubT(TINY_RIP)->Send();    # send an IS_RIP - Replay Information Packet (ISP_RIP)
+            if (!$isLocalHost) {
+                $ISP->SubT(TINY_RIP)->Send();    # send an IS_RIP - Replay Information Packet (ISP_RIP)
+            } else if ($PRISM->config->cvars['debugMode'] & PRISM_DEBUG_CORE) {
+                console('Skipping TINY_RIP request on local host.');
+            }
         }
     }
 

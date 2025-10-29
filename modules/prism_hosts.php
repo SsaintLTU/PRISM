@@ -644,9 +644,16 @@ class HostHandler extends SectionHandler
                 return FALSE;
             }
         }else{
-            if (($host->getFlags() & ISF_LOCAL) && $packetClass instanceof IS_MTC){
-                trigger_error('Attempted to send invalid packet to single player host.', E_USER_WARNING);
-                return FALSE;
+            if ($host->getFlags() & ISF_LOCAL) {
+                if ($packetClass instanceof IS_MTC){
+                    trigger_error('Attempted to send invalid packet to single player host.', E_USER_WARNING);
+                    return FALSE;
+                }
+
+                if ($packetClass instanceof IS_TINY && property_exists($packetClass, 'SubT') && $packetClass->SubT == TINY_RIP) {
+                    trigger_error('Attempted to request replay information from a single player host.', E_USER_WARNING);
+                    return FALSE;
+                }
             }
         }
 

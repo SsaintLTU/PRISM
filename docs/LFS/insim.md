@@ -14,7 +14,7 @@
 // NOTE : This text file was written with a TAB size equal to 4 spaces.
 
 
-// INSIM VERSION NUMBER (updated for version 0.7A)
+// INSIM VERSION NUMBER (updated for version 0.7F)
 // ====================
 
 const int INSIM_VERSION = 9;
