@@ -1171,6 +1171,13 @@ class InsimConnection
 
     public function writeUDP($data)
     {
+        if (!is_resource($this->socket))
+        {
+            // Socket has already been torn down - treat this as a no-op so queued packets
+            // don't trigger PHP 8+ type errors while the reconnection logic spins up.
+            return 0;
+        }
+
         $this->lastWriteTime = time();
         if (($bytes = @fwrite($this->socket, $data)) === FALSE)
             console('UDP: Error sending packet through socket.');
