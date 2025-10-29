@@ -46,6 +46,8 @@ class HostHandler extends SectionHandler
 
     public $curHostID        = NULL;                # Contains the current HostID we are talking to.
 
+    private $debugTrafficEnabled = false;
+
     public function &getCurrentHost()
     {
         return $this->curHostID;
@@ -89,6 +91,8 @@ class HostHandler extends SectionHandler
 
         // Populate $this->hosts array from the connections.ini variables we've just read
         $this->populateHostsFromVars();
+
+        $this->debugTrafficEnabled = (($PRISM->config->cvars['debugMode'] & (PRISM_DEBUG_CORE + PRISM_DEBUG_MODULES)) !== 0);
 
         return true;
     }
@@ -233,6 +237,7 @@ class HostHandler extends SectionHandler
 
     public function getSelectableSockets(array &$sockReads, array &$sockWrites)
     {
+        $now = time();
         foreach ($this->hosts as $hostID => $host)
         {
             if ($host->getConnStatus() >= CONN_CONNECTED)
@@ -250,7 +255,7 @@ class HostHandler extends SectionHandler
             else
             {
                 // Should we try to connect?
-                if ($host->getMustConnect() > -1 && $host->getMustConnect() < time())
+                if ($host->getMustConnect() > -1 && $host->getMustConnect() < $now)
                 {
                     if ($host->connect()) {
                         if ($host->getSocketType() == SOCKTYPE_TCP)
@@ -273,16 +278,30 @@ class HostHandler extends SectionHandler
 
     public function checkTraffic(array &$sockReads, array &$sockWrites)
     {
-        global $PRISM;
-
         $activity = 0;
+
+        $readLookup = array();
+        foreach ($sockReads as $socketResource)
+        {
+            if (is_resource($socketResource))
+                $readLookup[(int)$socketResource] = TRUE;
+        }
+
+        $writeLookup = array();
+        foreach ($sockWrites as $socketResource)
+        {
+            if (is_resource($socketResource))
+                $writeLookup[(int)$socketResource] = TRUE;
+        }
 
         // Host traffic
         foreach($this->hosts as $hostID => $host)
         {
             // Finalise a tcp connection?
+            $socket = $host->getSocket();
+            $socketKey = is_resource($socket) ? (int)$socket : NULL;
             if ($host->getConnStatus() == CONN_CONNECTING &&
-                in_array($host->getSocket(), $sockWrites))
+                $socketKey !== NULL && isset($writeLookup[$socketKey]))
             {
                 $activity++;
 
@@ -308,7 +327,7 @@ class HostHandler extends SectionHandler
             // Recover a lagged host?
             if ($host->getConnStatus() >= CONN_CONNECTED &&
                 $host->getSendQLen() > 0 &&
-                in_array($host->getSocket(), $sockWrites))
+                $socketKey !== NULL && isset($writeLookup[$socketKey]))
             {
                 $activity++;
 
@@ -317,7 +336,7 @@ class HostHandler extends SectionHandler
             }
 
             // Did the host send us something?
-            if (in_array($host->getSocket(), $sockReads))
+            if ($socketKey !== NULL && isset($readLookup[$socketKey]))
             {
                 $activity++;
                 $data = $packet = '';
@@ -357,7 +376,9 @@ class HostHandler extends SectionHandler
             }
 
             // Did the host send us something on our separate udp port (if we have that active to begin with)?
-            if ($host->getUdpPort() > 0 && in_array($host->getSocketMCI(), $sockReads))
+            $socketMCI = $host->getSocketMCI();
+            $socketMCIKey = is_resource($socketMCI) ? (int)$socketMCI : NULL;
+            if ($host->getUdpPort() > 0 && $socketMCIKey !== NULL && isset($readLookup[$socketMCIKey]))
             {
                 $activity++;
 
@@ -372,7 +393,9 @@ class HostHandler extends SectionHandler
             }
 
             // Did the host send us something on our outgauge socket? (if we have that active to begin with)
-            if ($host->getOutgaugePort() > 0 && in_array($host->getSocketOutgauge(), $sockReads))
+            $socketOutgauge = $host->getSocketOutgauge();
+            $socketOutgaugeKey = is_resource($socketOutgauge) ? (int)$socketOutgauge : NULL;
+            if ($host->getOutgaugePort() > 0 && $socketOutgaugeKey !== NULL && isset($readLookup[$socketOutgaugeKey]))
             {
                 $activity++;
 
@@ -398,6 +421,10 @@ class HostHandler extends SectionHandler
         // InSim Connection maintenance
         $c = 0;
         $d = 0;
+        $now = time();
+        $timeoutThreshold = $now - HOST_TIMEOUT;
+        $keepaliveThreshold = $now - KEEPALIVE_TIME;
+        $connectTimeoutThreshold = $now - CONN_TIMEOUT;
         foreach($this->hosts as $hostID => $host)
         {
             $c++;
@@ -410,7 +437,7 @@ class HostHandler extends SectionHandler
             else if ($host->getConnStatus() == CONN_CONNECTING)
             {
                 // Check to see if a connection attempt is going to time out.
-                if ($host->getConnTime() < time() - CONN_TIMEOUT)
+                if ($host->getConnTime() < $connectTimeoutThreshold)
                 {
                     console('Connection attempt to '.$host->getIP().':'.$host->getPort().' timed out');
                     $host->close();
@@ -419,14 +446,14 @@ class HostHandler extends SectionHandler
             }
 
             // Does the connection appear to be dead? (LFS host not sending anything for more than HOST_TIMEOUT seconds
-            if ($host->getLastReadTime() < time () - HOST_TIMEOUT)
+            if ($host->getLastReadTime() < $timeoutThreshold)
             {
                 console('Host '.$host->getIP().':'.$host->getPort().' timed out');
                 $host->close();
             }
 
             // Do we need to keep the connection alive with a ping?
-            if ($host->getLastWriteTime() < time () - KEEPALIVE_TIME)
+            if ($host->getLastWriteTime() < $keepaliveThreshold)
             {
                 $ISP = new IS_TINY();
                 $ISP->SubT = TINY_NONE;
@@ -445,13 +472,14 @@ class HostHandler extends SectionHandler
 
     private function handlePacket(&$rawPacket, &$hostID)
     {
-        global $PRISM, $TYPEs, $TINY, $SMALL;
+        global $TYPEs;
 
         // Check packet size
-        if ((strlen($rawPacket) % 4) > 0)
+        $rawPacketLength = strlen($rawPacket);
+        if (($rawPacketLength % 4) > 0)
         {
             // Packet size is not a multiple of 4
-            console('WARNING : packet with invalid size ('.strlen($rawPacket).') from '.$hostID);
+            console('WARNING : packet with invalid size ('.$rawPacketLength.') from '.$hostID);
 
             // Let's clear the buffer to be sure, because remaining data cannot be trusted at this point.
             $this->hosts[$hostID]->clearBuffer();
@@ -469,27 +497,13 @@ class HostHandler extends SectionHandler
         $pH = unpack('CSize/CType/CReqI/CSubT', $rawPacket);
         if (isset($TYPEs[$pH['Type']]))
         {
-            if ($PRISM->config->cvars['debugMode'] & (PRISM_DEBUG_CORE + PRISM_DEBUG_MODULES))
-            {
-                $memoryUsage = round(memory_get_usage() / 1024 / 1024, 2);
-                switch ($pH['Type'])
-                {
-                    case ISP_TINY:
-                        console(date('i:s') . '|<' . $memoryUsage . "M< {$TINY[$pH['SubT']]} Packet from {$hostID}.");
-                    break;
-                    case ISP_SMALL:
-                        console(date('i:s') . '|<' . $memoryUsage . "M< {$SMALL[$pH['SubT']]} Packet from {$hostID}.");
-                    break;
-                    default:
-                        console(date('i:s') . '|<' . $memoryUsage . "M< {$TYPEs[$pH['Type']]} Packet from {$hostID}.");
-                }
-            }
+            $this->logPacketTraffic('<', $pH['Type'], isset($pH['SubT']) ? $pH['SubT'] : NULL, $hostID);
             $packet = new $TYPEs[$pH['Type']]($rawPacket);
             $this->inspectPacket($packet, $hostID);
         }
         else
         {
-            console("Unknown Type Byte of {$pH['Type']}, with reported size of {$pH['Size']} Bytes and actual size of " . strlen($rawPacket) . ' Bytes.');
+            console("Unknown Type Byte of {$pH['Type']}, with reported size of {$pH['Size']} Bytes and actual size of {$rawPacketLength} Bytes.");
         }
     }
 
@@ -636,22 +650,7 @@ class HostHandler extends SectionHandler
             }
         }
 
-        global $PRISM, $TYPEs, $TINY, $SMALL;
-        if ($PRISM->config->cvars['debugMode'] & (PRISM_DEBUG_CORE + PRISM_DEBUG_MODULES))
-        {
-            $memoryUsage = round(memory_get_usage() / 1024 / 1024, 2);
-            switch ($packetClass->Type)
-            {
-                case ISP_TINY:
-                    console(date('i:s') . '|>' . $memoryUsage . "M> {$TINY[$packetClass->SubT]} Packet to {$hostId}.");
-                break;
-                case ISP_SMALL:
-                    console(date('i:s') . '|>' . $memoryUsage . "M> {$SMALL[$packetClass->SubT]} Packet to {$hostId}.");
-                break;
-                default:
-                    console(date('i:s') . '|>' . $memoryUsage . "M> {$TYPEs[$packetClass->Type]} Packet to {$hostId}.");
-            }
-        }
+        $this->logPacketTraffic('>', $packetClass->Type, property_exists($packetClass, 'SubT') ? $packetClass->SubT : NULL, $hostId);
 
         return $host->writePacket($packetClass);
     }
@@ -708,6 +707,35 @@ class HostHandler extends SectionHandler
             return $this->state[$hostId];
 
         return NULL;
+    }
+
+    private function getDebugMemoryUsage()
+    {
+        return sprintf('%.2f', memory_get_usage() / 1048576);
+    }
+
+    private function logPacketTraffic($direction, $type, $subType, $hostId)
+    {
+        if (!$this->debugTrafficEnabled)
+            return;
+
+        global $TYPEs, $TINY, $SMALL;
+
+        $memoryUsage = $this->getDebugMemoryUsage();
+        $prefix = date('i:s') . '|' . $direction . $memoryUsage . 'M' . $direction . ' ';
+
+        if ($type == ISP_TINY && $subType !== NULL && isset($TINY[$subType]))
+            $packetName = $TINY[$subType];
+        else if ($type == ISP_SMALL && $subType !== NULL && isset($SMALL[$subType]))
+            $packetName = $SMALL[$subType];
+        else if (isset($TYPEs[$type]))
+            $packetName = $TYPEs[$type];
+        else
+            $packetName = 'Unknown';
+
+        $directionWord = ($direction == '>') ? 'to' : 'from';
+
+        console($prefix . $packetName . ' Packet ' . $directionWord . ' ' . $hostId . '.');
     }
 }
 
