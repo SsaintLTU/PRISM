@@ -105,7 +105,7 @@ class PHPInSimMod
         require_once(ROOTPATH . "/modules/prism_" . strtolower($className) . ".php");
     }
 
-    public static function _errorHandler($errno, $errstr, $errfile, $errline, $errcontext)
+    public static function _errorHandler($errno, $errstr, $errfile, $errline, $errcontext = null)
     {
         # This error code is not included in error_reporting
         if (!(error_reporting() & $errno))
@@ -219,6 +219,28 @@ class PHPInSimMod
 
             // Update timeout if there are timers waiting to be fired.
             $this->updateSelectTimeOut($this->sleep, $this->uSleep);
+
+            if (empty($sockReads) && empty($sockWrites)) {
+                if ($this->nextMaintenance <= time()) {
+                    $this->nextMaintenance = time() + MAINTENANCE_INTERVAL;
+
+                    if (!$this->hosts->maintenance()) {
+                        $this->isRunning = false;
+                        break;
+                    }
+
+                    $this->http->maintenance();
+                    PHPParser::cleanSessions();
+                }
+
+                if ($this->uSleep !== null) {
+                    usleep(max(1, (int) $this->uSleep));
+                } else {
+                    sleep(max(1, (int) $this->sleep));
+                }
+
+                continue;
+            }
 
             # Error suppression used because this function returns a "Invalid CRT parameters detected" only on Windows.
             $numReady = @stream_select($sockReads, $sockWrites, $socketExcept, $this->sleep, $this->uSleep);

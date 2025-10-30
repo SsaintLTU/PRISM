@@ -54,7 +54,11 @@ class cron
                 if (FALSE === (bool) preg_match('/'.$job['regex'].'/', $now))
                     continue;
 
-                switch ($job['cmd']{0})
+                if ($job['cmd'] === '') {
+                    continue;
+                }
+
+                switch ($job['cmd'][0])
                 {
                     case '/':
                         IS_MST()->Msg($job['cmd'])->Send();
@@ -80,7 +84,7 @@ class cron
 
         foreach (preg_split('/\r?\n/', $file_contents, -1, PREG_SPLIT_NO_EMPTY) as $line)
         {
-            if ($line{0} === '#')
+            if ($line === '' || $line[0] === '#')
                 continue;
 
             list($seconds, $minutes, $hours, $mday, $month, $day, $command) = preg_split('/\s+/', $line, 7, PREG_SPLIT_NO_EMPTY);
