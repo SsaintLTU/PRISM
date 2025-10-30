@@ -368,7 +368,9 @@ class serverModes extends Plugins
 
         if ($this->cruiseSystems->isActive()) {
             $carCode = trim($NPL->CName);
+            $skinName = trim($NPL->SName);
             $player['state']['garage']['active_car'] = $carCode;
+            $player['state']['garage']['active_skin'] = $skinName;
             $isNewVehicle = false;
             if (!isset($player['state']['garage']['vehicles'][$carCode])) {
                 $player['state']['garage']['vehicles'][$carCode] = array(
@@ -378,11 +380,16 @@ class serverModes extends Plugins
                     'mod' => array(),
                     'acquired_at' => 0,
                     'discord_announced' => false,
+                    'last_skin' => '',
                 );
                 $isNewVehicle = true;
             }
+            if ($skinName !== '') {
+                $player['state']['garage']['vehicles'][$carCode]['last_skin'] = $skinName;
+            }
             $player['state_dirty'] = true;
             $this->vehicleMods->handleVehicleActivation($player, $carCode, $isNewVehicle);
+            $this->cruiseSystems->onPlayerJoinRace($player, $NPL);
         }
 
         $this->driftSystems->onPlayerJoinRace($player, $NPL);
@@ -399,6 +406,10 @@ class serverModes extends Plugins
         if (isset($this->plidMap[$PLL->PLID])) {
             $ucid = $this->plidMap[$PLL->PLID];
             unset($this->plidMap[$PLL->PLID]);
+            if ($this->cruiseSystems->isActive() && isset($this->players[$ucid])) {
+                $player =& $this->players[$ucid];
+                $this->cruiseSystems->onPlayerLeaveRace($player);
+            }
             if (isset($this->players[$ucid]['positions'][$PLL->PLID])) {
                 unset($this->players[$ucid]['positions'][$PLL->PLID]);
             }

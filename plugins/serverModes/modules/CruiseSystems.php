@@ -13,6 +13,8 @@ class ServerModes_CruiseSystems
     private array $config = array();
     private array $teleports = array();
     private array $trafficChecks = array();
+    private array $jobs = array();
+    private array $jobTriggers = array();
     private array $officers = array();
     private array $hudRendered = array();
 
@@ -28,6 +30,8 @@ class ServerModes_CruiseSystems
         $this->config = array_replace_recursive($this->config, $config);
         $this->teleports = $this->parseTeleports($this->config['teleports'] ?? array());
         $this->trafficChecks = $this->parseTrafficChecks($this->config['traffic_checks'] ?? array());
+        $this->jobs = $this->parseJobs($this->config['jobs'] ?? array());
+        $this->jobTriggers = $this->indexJobTriggers($this->jobs);
         $this->officers = $this->parseList($this->config['police_officers'] ?? '');
     }
 
@@ -68,6 +72,68 @@ class ServerModes_CruiseSystems
         unset($this->hudRendered[$ucid]);
     }
 
+    public function onPlayerJoinRace(array &$player, IS_NPL $packet): void
+    {
+        if (!$this->active) {
+            return;
+        }
+
+        $this->initialisePlayerState($player);
+        $state =& $player['state'];
+
+        $carCode = trim($packet->CName);
+        $skin = trim($packet->SName);
+        $changed = false;
+
+        if ($carCode !== '') {
+            if (($state['garage']['active_car'] ?? '') !== $carCode) {
+                $state['garage']['active_car'] = $carCode;
+                $changed = true;
+            }
+
+            if (!isset($state['garage']['vehicles'][$carCode])) {
+                $state['garage']['vehicles'][$carCode] = $this->createVehicleRecord();
+                $changed = true;
+            }
+
+            if ($skin !== '') {
+                if (($state['garage']['vehicles'][$carCode]['last_skin'] ?? '') !== $skin) {
+                    $state['garage']['vehicles'][$carCode]['last_skin'] = $skin;
+                    $changed = true;
+                }
+            }
+        }
+
+        if (($state['garage']['active_skin'] ?? '') !== $skin) {
+            $state['garage']['active_skin'] = $skin;
+            $changed = true;
+        }
+
+        if ($changed) {
+            $this->markStateDirty($player);
+        }
+
+        $this->evaluateJobEligibility($player);
+    }
+
+    public function onPlayerLeaveRace(array &$player): void
+    {
+        if (!$this->active) {
+            return;
+        }
+
+        $this->initialisePlayerState($player);
+
+        if ($this->isJobActive($player)) {
+            $this->cancelJob($player, '^1Job cancelled: you left the track.');
+        }
+
+        $state =& $player['state'];
+        $state['garage']['active_car'] = '';
+        $state['garage']['active_skin'] = '';
+        $this->markStateDirty($player);
+    }
+
     public function onMovementReward(array &$player, float $deltaKm, float $speedKph, float $earnedMoney, float $earnedXp, CompCar $info): void
     {
         $this->initialisePlayerState($player);
@@ -95,6 +161,8 @@ class ServerModes_CruiseSystems
                     $this->sendMessage($player['ucid'], $message);
                 }
             }
+
+            $this->updateJobProgress($player, $deltaKm);
         }
 
         if ($deltaKm > 0.0 || $speedKph > 1.0) {
@@ -794,16 +862,11 @@ class ServerModes_CruiseSystems
 
     public function handleUserControlObject(IS_UCO $packet): void
     {
-        if (!$this->active || empty($this->trafficChecks)) {
+        if (!$this->active) {
             return;
         }
 
         if ($packet->UCOAction !== UCO_CIRCLE_ENTER) {
-            return;
-        }
-
-        $circleId = $packet->Info->Index;
-        if (!isset($this->trafficChecks[$circleId])) {
             return;
         }
 
@@ -815,17 +878,12 @@ class ServerModes_CruiseSystems
         $player =& $this->plugin->getPlayerRecord($ucid);
         $this->initialisePlayerState($player);
 
-        $lightId = $this->trafficChecks[$circleId]['light'];
-        $expectedHeading = $this->trafficChecks[$circleId]['heading'];
-        $currentHeading = $player['state']['telemetry']['heading'] ?? 0.0;
-        $angleDiff = $this->normaliseAngle($currentHeading - $expectedHeading);
+        if (!empty($this->trafficChecks)) {
+            $this->processTrafficCircle($player, $packet);
+        }
 
-        $lightController = $this->plugin->getTrafficLights();
-        $state = $lightController ? $lightController->getState($lightId) : TL_GREEN;
-
-        if ($state === TL_RED && abs($angleDiff) < 45) {
-            $this->adjustSafetyPoints($player, -25);
-            $this->sendMessage($ucid, '^1Red light violation! Safety points reduced.');
+        if (!empty($this->jobTriggers)) {
+            $this->processJobCircle($player, $packet);
         }
     }
 
@@ -908,8 +966,23 @@ class ServerModes_CruiseSystems
 
         $lineTwo = sprintf('^7Session:^3%s ^7Dist:^3%.2f km ^7Safety:%s', $this->formatSignedCurrency($sessionMoney), $sessionDistance, $safety);
 
+        $jobLine = null;
+        if (is_array($state['jobs']['active'] ?? null)) {
+            $job = $state['jobs']['active'];
+            $distance = $job['distance'] ?? 0.0;
+            $earned = $job['earned'] ?? 0.0;
+            $jobName = $job['name'] ?? $job['id'] ?? 'Job';
+            $jobLine = sprintf('^7Job:^3%s ^7Dist:^3%.1f km ^7Pay:^3%s', $jobName, $distance, $this->formatCurrency($earned));
+        }
+
         $this->drawButton($ucid, 'HudMain', self::HUD_GROUP, 0, 0, 200, 4, $lineOne, ISB_DARK | ISB_LEFT | ISB_CLICK);
-        $this->drawButton($ucid, 'HudSession', self::HUD_GROUP, 0, 196, 200, 4, $lineTwo, ISB_DARK | ISB_LEFT);
+        if ($jobLine !== null) {
+            $this->drawButton($ucid, 'HudJob', self::HUD_GROUP, 0, 192, 200, 4, $jobLine, ISB_DARK | ISB_LEFT);
+            $this->drawButton($ucid, 'HudSession', self::HUD_GROUP, 0, 196, 200, 4, $lineTwo, ISB_DARK | ISB_LEFT);
+        } else {
+            ButtonManager::removeButtonByKey($ucid, 'HudJob');
+            $this->drawButton($ucid, 'HudSession', self::HUD_GROUP, 0, 196, 200, 4, $lineTwo, ISB_DARK | ISB_LEFT);
+        }
 
         $this->hudRendered[$ucid] = true;
     }
@@ -937,6 +1010,287 @@ class ServerModes_CruiseSystems
         } else {
             $state['ui']['afk_notified'] = null;
         }
+    }
+
+    private function processTrafficCircle(array &$player, IS_UCO $packet): void
+    {
+        $circleId = $packet->Info->Index;
+        if (!isset($this->trafficChecks[$circleId])) {
+            return;
+        }
+
+        $lightId = $this->trafficChecks[$circleId]['light'];
+        $expectedHeading = $this->trafficChecks[$circleId]['heading'];
+        $currentHeading = $player['state']['telemetry']['heading'] ?? 0.0;
+        $angleDiff = $this->normaliseAngle($currentHeading - $expectedHeading);
+
+        $lightController = $this->plugin->getTrafficLights();
+        $state = $lightController ? $lightController->getState($lightId) : TL_GREEN;
+
+        if ($state === TL_RED && abs($angleDiff) < 45) {
+            $this->adjustSafetyPoints($player, -25);
+            $this->sendMessage($player['ucid'], '^1Red light violation! Safety points reduced.');
+        }
+    }
+
+    private function processJobCircle(array &$player, IS_UCO $packet): void
+    {
+        $circleId = $packet->Info->Index;
+        if (!isset($this->jobTriggers[$circleId])) {
+            return;
+        }
+
+        foreach ($this->jobTriggers[$circleId] as $trigger) {
+            $jobId = $trigger['job'];
+            if (!isset($this->jobs[$jobId])) {
+                continue;
+            }
+
+            if (!$this->isTriggerHeadingMatch($player, $trigger)) {
+                continue;
+            }
+
+            $job = $this->jobs[$jobId];
+            $action = $trigger['action'];
+
+            if ($action === 'start') {
+                if ($this->canStartJob($player, $job)) {
+                    $this->startJob($player, $job);
+                }
+            } elseif ($action === 'finish') {
+                if ($this->isJobActive($player, $jobId)) {
+                    $this->completeJob($player, $job);
+                }
+            }
+        }
+    }
+
+    private function isTriggerHeadingMatch(array &$player, array $trigger): bool
+    {
+        if (!isset($trigger['heading'])) {
+            return true;
+        }
+
+        $heading = $player['state']['telemetry']['heading'] ?? 0.0;
+        $target = (float)$trigger['heading'];
+        $tolerance = isset($trigger['tolerance']) ? (float)$trigger['tolerance'] : 45.0;
+        $diff = abs($this->normaliseAngle($heading - $target));
+
+        return $diff <= max(0.0, $tolerance);
+    }
+
+    private function updateJobProgress(array &$player, float $deltaKm): void
+    {
+        $state =& $player['state'];
+        if (!is_array($state['jobs']['active'] ?? null)) {
+            return;
+        }
+
+        $active =& $state['jobs']['active'];
+        $jobId = $active['id'] ?? '';
+        if ($jobId === '' || !isset($this->jobs[$jobId])) {
+            return;
+        }
+
+        $job = $this->jobs[$jobId];
+        $active['distance'] = ($active['distance'] ?? 0.0) + $deltaKm;
+
+        $rate = (float)($job['payout_per_km'] ?? 0.0);
+        $earned = 0.0;
+        if ($rate > 0.0) {
+            $earned = $deltaKm * $rate;
+            if ($earned > 0.0) {
+                $state['economy']['cash'] += $earned;
+                $player['session']['money'] += $earned;
+            }
+        }
+
+        $active['earned'] = ($active['earned'] ?? 0.0) + $earned;
+        $this->markStateDirty($player);
+    }
+
+    private function startJob(array &$player, array $job): void
+    {
+        $ucid = $player['ucid'];
+        $state =& $player['state'];
+
+        $state['jobs']['active'] = array(
+            'id' => $job['id'],
+            'name' => $job['name'],
+            'category' => $job['category'],
+            'started_at' => time(),
+            'distance' => 0.0,
+            'earned' => 0.0,
+            'start_circle' => $job['start_circle'] ?? 0,
+        );
+
+        $message = $job['start_message'] ?? '';
+        if ($message === '') {
+            $message = sprintf('^2Job started:^3 %s', $job['name']);
+        }
+
+        $this->sendMessage($ucid, $message);
+        $this->markStateDirty($player);
+    }
+
+    private function completeJob(array &$player, array $job): void
+    {
+        $bonus = max(0.0, (float)($job['finish_bonus'] ?? 0.0));
+        $message = $job['finish_message'] ?? '';
+        if ($message === '') {
+            $message = sprintf('^2Job complete:^3 %s', $job['name']);
+        }
+
+        $this->endJob($player, $job, 'complete', $message, $bonus);
+    }
+
+    private function cancelJob(array &$player, string $reason): void
+    {
+        if (!$this->isJobActive($player)) {
+            return;
+        }
+
+        $jobId = $player['state']['jobs']['active']['id'] ?? '';
+        $job = $jobId !== '' && isset($this->jobs[$jobId]) ? $this->jobs[$jobId] : array('name' => $jobId, 'id' => $jobId);
+
+        $this->endJob($player, $job, 'cancelled', $reason, 0.0, true);
+    }
+
+    private function endJob(array &$player, array $job, string $status, string $message, float $bonus = 0.0, bool $notify = true): void
+    {
+        $state =& $player['state'];
+        $active = $state['jobs']['active'] ?? null;
+        if (!is_array($active)) {
+            return;
+        }
+
+        $earned = $active['earned'] ?? 0.0;
+        if ($bonus > 0.0) {
+            $state['economy']['cash'] += $bonus;
+            $player['session']['money'] += $bonus;
+            $earned += $bonus;
+        }
+
+        $history = array(
+            'id' => $job['id'] ?? ($active['id'] ?? ''),
+            'name' => $job['name'] ?? ($active['name'] ?? ''),
+            'category' => $job['category'] ?? ($active['category'] ?? ''),
+            'distance' => $active['distance'] ?? 0.0,
+            'earned' => $earned,
+            'finished_at' => time(),
+            'status' => $status,
+        );
+
+        $this->addJobHistory($player, $history);
+
+        $state['jobs']['active'] = null;
+        if ($notify && $message !== '') {
+            $this->sendMessage($player['ucid'], $message);
+        }
+
+        $this->markStateDirty($player);
+    }
+
+    private function addJobHistory(array &$player, array $entry): void
+    {
+        $state =& $player['state'];
+        if (!isset($state['jobs']['history']) || !is_array($state['jobs']['history'])) {
+            $state['jobs']['history'] = array();
+        }
+
+        $state['jobs']['history'][] = $entry;
+        if (count($state['jobs']['history']) > 10) {
+            $state['jobs']['history'] = array_slice($state['jobs']['history'], -10);
+        }
+    }
+
+    private function isJobActive(array &$player, string $jobId = ''): bool
+    {
+        $active = $player['state']['jobs']['active'] ?? null;
+        if (!is_array($active)) {
+            return false;
+        }
+
+        if ($jobId === '') {
+            return true;
+        }
+
+        return strcasecmp((string)($active['id'] ?? ''), $jobId) === 0;
+    }
+
+    private function canStartJob(array &$player, array $job): bool
+    {
+        if ($this->isJobActive($player)) {
+            return false;
+        }
+
+        return $this->meetsJobRequirements($player, $job);
+    }
+
+    private function evaluateJobEligibility(array &$player): void
+    {
+        if (!$this->isJobActive($player)) {
+            return;
+        }
+
+        $jobId = $player['state']['jobs']['active']['id'] ?? '';
+        if ($jobId === '' || !isset($this->jobs[$jobId])) {
+            $player['state']['jobs']['active'] = null;
+            $this->markStateDirty($player);
+            return;
+        }
+
+        if (!$this->meetsJobRequirements($player, $this->jobs[$jobId])) {
+            $this->cancelJob($player, '^1Job cancelled: requirements no longer met.');
+        }
+    }
+
+    private function meetsJobRequirements(array &$player, array $job): bool
+    {
+        $state =& $player['state'];
+        $car = $state['garage']['active_car'] ?? '';
+        if ($car === '') {
+            return false;
+        }
+
+        $vehicle = $state['garage']['vehicles'][$car] ?? null;
+        if (!is_array($vehicle)) {
+            return false;
+        }
+
+        $requiredMods = $job['required_mod_ids'] ?? array();
+        if (!empty($requiredMods)) {
+            $modId = strtoupper((string)($vehicle['mod']['id'] ?? ''));
+            $modMatches = false;
+            foreach ($requiredMods as $requirement) {
+                if ($modId !== '' && strcasecmp($modId, $requirement) === 0) {
+                    $modMatches = true;
+                    break;
+                }
+            }
+            if (!$modMatches) {
+                return false;
+            }
+        }
+
+        $requiredSkins = $job['required_skin_ids'] ?? array();
+        if (!empty($requiredSkins)) {
+            $activeSkin = strtoupper((string)($state['garage']['active_skin'] ?? ''));
+            $vehicleSkin = strtoupper((string)($vehicle['last_skin'] ?? ''));
+            $skinMatches = false;
+            foreach ($requiredSkins as $skin) {
+                if (($activeSkin !== '' && strcasecmp($activeSkin, $skin) === 0)
+                    || ($vehicleSkin !== '' && strcasecmp($vehicleSkin, $skin) === 0)) {
+                    $skinMatches = true;
+                    break;
+                }
+            }
+            if (!$skinMatches) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private function tickSalary(array &$player): void
@@ -1005,12 +1359,17 @@ class ServerModes_CruiseSystems
             ),
             'garage' => array(
                 'active_car' => '',
+                'active_skin' => '',
                 'vehicles' => array(),
             ),
             'stats' => array(
                 'xp' => 0.0,
                 'licenses' => 0,
                 'lap_count' => 0,
+            ),
+            'jobs' => array(
+                'active' => null,
+                'history' => array(),
             ),
             'police' => array(
                 'safety_points' => 500,
@@ -1039,6 +1398,7 @@ class ServerModes_CruiseSystems
             'mod' => array(),
             'acquired_at' => 0,
             'discord_announced' => false,
+            'last_skin' => '',
         );
     }
 
@@ -1164,6 +1524,116 @@ class ServerModes_CruiseSystems
             }
         }
         return $checks;
+    }
+
+    private function parseJobs($raw): array
+    {
+        if (!is_array($raw)) {
+            return array();
+        }
+
+        $jobs = array();
+        foreach ($raw as $key => $value) {
+            $id = strtolower(trim((string)$key));
+            if ($id === '') {
+                continue;
+            }
+
+            if (is_array($value)) {
+                $job = $this->normaliseJobDefinition($id, $value);
+            } else {
+                $parts = array_map('trim', explode('|', (string)$value));
+                $job = $this->normaliseJobDefinition($id, array(
+                    'name' => $parts[1] ?? ucfirst($id),
+                    'category' => $parts[2] ?? 'general',
+                    'start_circle' => isset($parts[3]) ? (int)$parts[3] : 0,
+                ));
+            }
+
+            if (($job['start_circle'] ?? 0) > 0) {
+                $jobs[$job['id']] = $job;
+            }
+        }
+
+        return $jobs;
+    }
+
+    private function indexJobTriggers(array $jobs): array
+    {
+        $triggers = array();
+        foreach ($jobs as $job) {
+            if (($job['start_circle'] ?? 0) > 0) {
+                $circle = (int)$job['start_circle'];
+                $triggers[$circle][] = array(
+                    'job' => $job['id'],
+                    'action' => 'start',
+                    'heading' => $job['start_heading'],
+                    'tolerance' => $job['start_tolerance'],
+                );
+            }
+
+            if (($job['finish_circle'] ?? 0) > 0) {
+                $circle = (int)$job['finish_circle'];
+                $triggers[$circle][] = array(
+                    'job' => $job['id'],
+                    'action' => 'finish',
+                    'heading' => $job['finish_heading'],
+                    'tolerance' => $job['finish_tolerance'],
+                );
+            }
+        }
+
+        return $triggers;
+    }
+
+    private function normaliseJobDefinition(string $id, array $data): array
+    {
+        $job = array(
+            'id' => $id,
+            'name' => $data['name'] ?? ucfirst($id),
+            'category' => $data['category'] ?? 'general',
+            'start_circle' => isset($data['start_circle']) ? (int)$data['start_circle'] : (isset($data['circle']) ? (int)$data['circle'] : 0),
+            'finish_circle' => isset($data['finish_circle']) ? (int)$data['finish_circle'] : 0,
+            'start_heading' => isset($data['start_heading']) ? (float)$data['start_heading'] : null,
+            'finish_heading' => isset($data['finish_heading']) ? (float)$data['finish_heading'] : null,
+            'start_tolerance' => isset($data['start_tolerance']) ? (float)$data['start_tolerance'] : 45.0,
+            'finish_tolerance' => isset($data['finish_tolerance']) ? (float)$data['finish_tolerance'] : 45.0,
+            'payout_per_km' => isset($data['payout_per_km']) ? (float)$data['payout_per_km'] : 0.0,
+            'finish_bonus' => isset($data['finish_bonus']) ? (float)$data['finish_bonus'] : 0.0,
+            'start_message' => $data['start_message'] ?? '',
+            'finish_message' => $data['finish_message'] ?? '',
+            'required_mod_ids' => $this->parseIdList($data['required_mod_ids'] ?? ($data['mods'] ?? array())),
+            'required_skin_ids' => $this->parseIdList($data['required_skin_ids'] ?? ($data['skins'] ?? array())),
+        );
+
+        if ($job['start_circle'] <= 0) {
+            $job['start_circle'] = 0;
+        }
+
+        if ($job['finish_circle'] <= 0) {
+            $job['finish_circle'] = 0;
+        }
+
+        return $job;
+    }
+
+    private function parseIdList($raw): array
+    {
+        if (is_array($raw)) {
+            $values = $raw;
+        } else {
+            $values = array_map('trim', explode(',', (string)$raw));
+        }
+
+        $list = array();
+        foreach ($values as $value) {
+            if ($value === '') {
+                continue;
+            }
+            $list[] = strtoupper($value);
+        }
+
+        return array_values(array_unique($list));
     }
 
     private function getDynamicInterestRatePercent(?array $player = null): float

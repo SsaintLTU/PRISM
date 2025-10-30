@@ -75,6 +75,7 @@ class ServerModes_VehicleMods
                 'mod' => array(),
                 'acquired_at' => 0,
                 'discord_announced' => false,
+                'last_skin' => '',
             );
         }
 
