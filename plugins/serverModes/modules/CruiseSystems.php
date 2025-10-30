@@ -148,7 +148,7 @@ class ServerModes_CruiseSystems
 
         $balance = $this->formatCurrency($state['economy']['cash']);
         $bank = $this->formatCurrency($state['economy']['bank']);
-        $interest = number_format($this->getConfigNumber('bank_interest_rate', 0.25), 2);
+        $interest = number_format($this->getDynamicInterestRatePercent(), 3);
         $salaryReady = $state['economy']['salary_ready_at'] <= time();
         $salaryLabel = $salaryReady ? '^2Ready' : '^8Waiting';
 
@@ -246,7 +246,7 @@ class ServerModes_CruiseSystems
                 $state['economy']['last_salary'] = $salary;
                 $state['economy']['salary_notified'] = false;
                 $bankBalance = $state['economy']['bank'];
-                $interestRate = $this->getConfigNumber('bank_interest_rate', 0.25) / 100.0;
+                $interestRate = $this->getDynamicInterestRatePercent() / 100.0;
                 if ($bankBalance > 0.0 && $interestRate > 0.0) {
                     $interest = $bankBalance * $interestRate;
                     $state['economy']['bank'] += $interest;
@@ -1046,6 +1046,17 @@ class ServerModes_CruiseSystems
             }
         }
         return $checks;
+    }
+
+    private function getDynamicInterestRatePercent(): float
+    {
+        $baseRate = $this->getConfigNumber('bank_interest_rate', 0.024);
+        $perPlayer = $this->getConfigNumber('bank_interest_rate_per_player', 0.02);
+        $playerCount = max(0, $this->plugin->getActivePlayerCount());
+
+        $rate = $baseRate + ($perPlayer * $playerCount);
+
+        return max(0.0, $rate);
     }
 
     private function getConfigNumber(string $key, float $default): float

@@ -934,6 +934,18 @@ class serverModes extends Plugins
         return $this->players;
     }
 
+    public function getActivePlayerCount(): int
+    {
+        $count = 0;
+        foreach ($this->players as $player) {
+            if (($player['ucid'] ?? 0) > 0) {
+                $count++;
+            }
+        }
+
+        return $count;
+    }
+
     public function getUcidByPlid(int $plid): ?int
     {
         return $this->plidMap[$plid] ?? null;
