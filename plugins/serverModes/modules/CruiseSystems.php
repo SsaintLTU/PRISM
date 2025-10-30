@@ -76,6 +76,27 @@ class ServerModes_CruiseSystems
         $state['economy']['cash'] += $earnedMoney;
         $state['stats']['xp'] = ($state['stats']['xp'] ?? 0.0) + $earnedXp;
 
+        if ($deltaKm > 0.0) {
+            $salaryRate = $this->getConfigNumber('salary_per_km', 10.0);
+            if ($salaryRate > 0.0) {
+                $state['economy']['salary_pool'] = ($state['economy']['salary_pool'] ?? 0.0) + ($deltaKm * $salaryRate);
+            }
+
+            $bonusKm = $this->getConfigNumber('salary_bonus_km', 100.0);
+            $bonusAmount = $this->getConfigNumber('salary_bonus_amount', 1000.0);
+            if ($bonusKm > 0.0) {
+                $state['economy']['bonus_progress_km'] = ($state['economy']['bonus_progress_km'] ?? 0.0) + $deltaKm;
+
+                while ($state['economy']['bonus_progress_km'] >= $bonusKm) {
+                    $state['economy']['bonus_progress_km'] -= $bonusKm;
+                    $state['economy']['bonus_tokens'] = ($state['economy']['bonus_tokens'] ?? 0) + 1;
+
+                    $message = sprintf('^2Bonus earned ^3%s^2 for driving ^3%d ^7km.', $this->formatCurrency(max(0.0, $bonusAmount)), (int)$bonusKm);
+                    $this->sendMessage($player['ucid'], $message);
+                }
+            }
+        }
+
         if ($deltaKm > 0.0 || $speedKph > 1.0) {
             $state['telemetry']['last_move'] = time();
         }
@@ -139,7 +160,7 @@ class ServerModes_CruiseSystems
         ButtonManager::removeButtonsByGroup($ucid, self::BANK_GROUP);
 
         $width = 90;
-        $height = 30;
+        $height = 48;
         $left = (int)((IS_X_MAX - $width) / 2);
         $top = 65;
 
@@ -148,19 +169,82 @@ class ServerModes_CruiseSystems
 
         $balance = $this->formatCurrency($state['economy']['cash']);
         $bank = $this->formatCurrency($state['economy']['bank']);
-        $interest = number_format($this->getDynamicInterestRatePercent(), 3);
-        $salaryReady = $state['economy']['salary_ready_at'] <= time();
-        $salaryLabel = $salaryReady ? '^2Ready' : '^8Waiting';
+        $interestRate = $this->getDynamicInterestRatePercent($player);
+        $interest = number_format($interestRate, 3);
+        $identityTag = $this->isIdentityVerified($player) ? '^2ID' : '^8ID';
+
+        $salaryPool = $this->formatCurrency($state['economy']['salary_pool'] ?? 0.0);
+        $bonusTokens = (int)($state['economy']['bonus_tokens'] ?? 0);
+        $bonusProgressKm = $state['economy']['bonus_progress_km'] ?? 0.0;
+        $bonusKm = $this->getConfigNumber('salary_bonus_km', 100.0);
+        $bonusAmount = $this->getConfigNumber('salary_bonus_amount', 1000.0);
+        $bonusValue = $this->formatCurrency($bonusTokens * max(0.0, $bonusAmount));
+        $bonusPercent = $bonusKm > 0.0 ? min(100.0, ($bonusProgressKm / $bonusKm) * 100.0) : 0.0;
+
+        $salaryReadyAt = (int)($state['economy']['salary_ready_at'] ?? time());
+        $now = time();
+        $salaryReady = $salaryReadyAt <= $now;
+        $remaining = max(0, $salaryReadyAt - $now);
+        $salaryLabel = $salaryReady ? '^2Ready' : '^8' . $this->formatSeconds($remaining);
+
+        $lastSalary = $this->formatCurrency($state['economy']['last_salary'] ?? 0.0);
+        $lastInterest = $this->formatCurrency($state['economy']['last_interest'] ?? 0.0);
+
+        $lineTop = $top + 8;
+        $lineStep = 7;
 
         $this->drawButton(
             $ucid,
             'BankBalance',
             self::BANK_GROUP,
             $left + 4,
-            $top + 11,
+            $lineTop,
             $width - 8,
-            6,
-            "^7Cash: ^2{$balance} ^7Bank: ^2{$bank} ^7Interest: ^3{$interest}%",
+            5,
+            "^7Cash: ^2{$balance} ^7Bank: ^2{$bank} ^7Interest: ^3{$interest}% ^7{$identityTag}",
+            ISB_DARK | ISB_LEFT
+        );
+
+        $lineTop += $lineStep;
+        $this->drawButton(
+            $ucid,
+            'BankSalary',
+            self::BANK_GROUP,
+            $left + 4,
+            $lineTop,
+            $width - 8,
+            5,
+            "^7Salary pool:^2{$salaryPool} ^7Pending bonus:^2{$bonusValue} ^7Last:^2{$lastSalary}",
+            ISB_DARK | ISB_LEFT
+        );
+
+        $lineTop += $lineStep;
+        $bonusText = ($bonusKm > 0.0)
+            ? sprintf('^7Bonuses:^2%d ^7Progress:^3%.1f%% (^3%.1f^7 km)', $bonusTokens, $bonusPercent, $bonusProgressKm)
+            : '^7Bonuses:^8Disabled';
+        $this->drawButton(
+            $ucid,
+            'BankBonus',
+            self::BANK_GROUP,
+            $left + 4,
+            $lineTop,
+            $width - 8,
+            5,
+            $bonusText,
+            ISB_DARK | ISB_LEFT
+        );
+
+        $lineTop += $lineStep;
+        $nextText = "^7Next payout: {$salaryLabel} ^7Last interest:^2{$lastInterest}";
+        $this->drawButton(
+            $ucid,
+            'BankNext',
+            self::BANK_GROUP,
+            $left + 4,
+            $lineTop,
+            $width - 8,
+            5,
+            $nextText,
             ISB_DARK | ISB_LEFT
         );
 
@@ -173,7 +257,7 @@ class ServerModes_CruiseSystems
         $btnWidth = 26;
         $gap = 3;
         $startLeft = $left + (int)(($width - ((count($buttons) * $btnWidth) + ((count($buttons) - 1) * $gap))) / 2);
-        $rowTop = $top + 20;
+        $rowTop = $top + 34;
 
         foreach ($buttons as $index => $meta) {
             $this->drawButton(
@@ -235,25 +319,52 @@ class ServerModes_CruiseSystems
                 break;
             case 'salary':
                 $now = time();
-                if ($state['economy']['salary_ready_at'] > $now) {
-                    $remaining = $state['economy']['salary_ready_at'] - $now;
+                $readyAt = (int)($state['economy']['salary_ready_at'] ?? $now);
+                if ($readyAt > $now) {
+                    $remaining = $readyAt - $now;
                     $this->sendMessage($ucid, '^8Salary not ready yet. Try again in ' . $this->formatSeconds($remaining) . '.');
                     break;
                 }
-                $salary = $this->getConfigNumber('salary_amount', 350.0);
-                $state['economy']['cash'] += $salary;
-                $state['economy']['salary_ready_at'] = $now + (int)$this->getConfigNumber('salary_interval', 900);
-                $state['economy']['last_salary'] = $salary;
-                $state['economy']['salary_notified'] = false;
+
+                $salaryPool = $state['economy']['salary_pool'] ?? 0.0;
+                $bonusTokens = (int)($state['economy']['bonus_tokens'] ?? 0);
+                $bonusAmount = $this->getConfigNumber('salary_bonus_amount', 1000.0);
+                $bonusTotal = $bonusTokens * max(0.0, $bonusAmount);
+                $totalSalary = $salaryPool + $bonusTotal;
+
                 $bankBalance = $state['economy']['bank'];
-                $interestRate = $this->getDynamicInterestRatePercent() / 100.0;
-                if ($bankBalance > 0.0 && $interestRate > 0.0) {
-                    $interest = $bankBalance * $interestRate;
-                    $state['economy']['bank'] += $interest;
-                    $this->sendMessage($ucid, '^2Salary collected with ^3' . $this->formatCurrency($interest) . '^2 interest.');
+                $interestRate = $this->getDynamicInterestRatePercent($player) / 100.0;
+                $interest = ($bankBalance > 0.0 && $interestRate > 0.0) ? $bankBalance * $interestRate : 0.0;
+
+                $messages = array();
+
+                if ($totalSalary > 0.0) {
+                    $state['economy']['cash'] += $totalSalary;
+                    $state['economy']['last_salary'] = $totalSalary;
+                    $bonusNote = ($bonusTokens > 0) ? sprintf(' ^7(%d bonus%s)', $bonusTokens, $bonusTokens === 1 ? '' : 'es') : '';
+                    $messages[] = sprintf('^2Salary ^3%s%s', $this->formatCurrency($totalSalary), $bonusNote);
                 } else {
-                    $this->sendMessage($ucid, '^2Salary collected.');
+                    $state['economy']['last_salary'] = 0.0;
                 }
+
+                if ($interest > 0.0) {
+                    $state['economy']['bank'] += $interest;
+                    $state['economy']['last_interest'] = $interest;
+                    $messages[] = '^2Interest ^3' . $this->formatCurrency($interest);
+                } else {
+                    $state['economy']['last_interest'] = 0.0;
+                }
+
+                if (empty($messages)) {
+                    $messages[] = '^8No salary or interest available yet. Keep driving!';
+                }
+
+                $state['economy']['salary_pool'] = 0.0;
+                $state['economy']['bonus_tokens'] = 0;
+                $state['economy']['salary_ready_at'] = $now + (int)$this->getConfigNumber('salary_interval', 2700);
+                $state['economy']['salary_notified'] = false;
+
+                $this->sendMessage($ucid, implode(' ^7| ', $messages));
                 $this->markStateDirty($player);
                 break;
             case 'close':
@@ -884,9 +995,13 @@ class ServerModes_CruiseSystems
             'economy' => array(
                 'cash' => 0.0,
                 'bank' => 0.0,
+                'salary_pool' => 0.0,
+                'bonus_progress_km' => 0.0,
+                'bonus_tokens' => 0,
                 'salary_ready_at' => $now,
                 'salary_notified' => false,
                 'last_salary' => 0.0,
+                'last_interest' => 0.0,
             ),
             'garage' => array(
                 'active_car' => '',
@@ -909,6 +1024,9 @@ class ServerModes_CruiseSystems
                 'heading' => 0.0,
             ),
             'ui' => array(),
+            'identity' => array(
+                'verified' => false,
+            ),
         );
     }
 
@@ -1048,15 +1166,37 @@ class ServerModes_CruiseSystems
         return $checks;
     }
 
-    private function getDynamicInterestRatePercent(): float
+    private function getDynamicInterestRatePercent(?array $player = null): float
     {
         $baseRate = $this->getConfigNumber('bank_interest_rate', 0.024);
         $perPlayer = $this->getConfigNumber('bank_interest_rate_per_player', 0.02);
+        $verifiedBonus = $this->getConfigNumber('bank_interest_verified_bonus', 0.02);
         $playerCount = max(0, $this->plugin->getActivePlayerCount());
 
         $rate = $baseRate + ($perPlayer * $playerCount);
 
+        if ($player !== null && $this->isIdentityVerified($player)) {
+            $rate += $verifiedBonus;
+        }
+
         return max(0.0, $rate);
+    }
+
+    private function isIdentityVerified(array $player): bool
+    {
+        if (!empty($player['state']['identity']['verified'])) {
+            return true;
+        }
+
+        if (!empty($player['identity']['verified'])) {
+            return true;
+        }
+
+        if (array_key_exists('identity_verified', $player)) {
+            return (bool)$player['identity_verified'];
+        }
+
+        return false;
     }
 
     private function getConfigNumber(string $key, float $default): float
