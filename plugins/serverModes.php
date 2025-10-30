@@ -88,6 +88,8 @@ class serverModes extends Plugins
         $this->registerPacket('onPlayerJoinRace', ISP_NPL);
         $this->registerPacket('onPlayerLeaveRace', ISP_PLL);
         $this->registerPacket('onCarInfo', ISP_MCI);
+        $this->registerPacket('onCarContact', ISP_CON);
+        $this->registerPacket('onObjectHit', ISP_OBH);
         $this->registerPacket('onLapCompleted', ISP_LAP);
         $this->registerPacket('onRaceResult', ISP_RES);
         $this->registerPacket('onButtonClick', ISP_BTC);
@@ -437,6 +439,149 @@ class serverModes extends Plugins
 
             $player =& $this->players[$ucid];
             $this->processMovement($player, $plid, $carInfo);
+        }
+
+        return PLUGIN_CONTINUE;
+    }
+
+    public function onCarContact(IS_CON $packet)
+    {
+        if (!$this->enabled) {
+            return PLUGIN_CONTINUE;
+        }
+
+        $contactA = $packet->A;
+        $contactB = $packet->B;
+
+        $playerA = null;
+        if ($contactA->PLID && isset($this->plidMap[$contactA->PLID])) {
+            $ucidA = $this->plidMap[$contactA->PLID];
+            if (isset($this->players[$ucidA])) {
+                $playerA =& $this->players[$ucidA];
+            }
+        }
+
+        $playerB = null;
+        if ($contactB->PLID && isset($this->plidMap[$contactB->PLID])) {
+            $ucidB = $this->plidMap[$contactB->PLID];
+            if (isset($this->players[$ucidB])) {
+                $playerB =& $this->players[$ucidB];
+            }
+        }
+
+        $participantA = $this->buildContactParticipantData($playerA, $contactA);
+        $participantB = $this->buildContactParticipantData($playerB, $contactB);
+
+        $closingKph = $this->closingSpeedToKph($packet->SpClose);
+        $speedAKph = $participantA['speed'];
+        $speedBKph = $participantB['speed'];
+        $speedDiff = abs($speedAKph - $speedBKph);
+
+        $headingA = $participantA['heading'];
+        $headingB = $participantB['heading'];
+        $directionA = $participantA['direction'];
+        $directionB = $participantB['direction'];
+        $angleDiff = $this->angularDifference($headingA, $headingB);
+
+        $impactType = $this->classifyImpact($angleDiff);
+        $blame = 'shared';
+
+        if ($playerA !== null && $playerB !== null) {
+            if ($closingKph < 5.0) {
+                $blame = 'shared';
+            } elseif ($impactType === 'rear') {
+                if ($speedDiff > 5.0) {
+                    $blame = ($speedAKph > $speedBKph) ? 'A' : 'B';
+                }
+            } elseif ($impactType === 'side') {
+                $dirDiff = $this->angularDifference($directionA, $directionB);
+                if ($dirDiff < 45.0 && $speedDiff > 5.0) {
+                    $blame = ($speedAKph > $speedBKph) ? 'A' : 'B';
+                }
+            }
+        } elseif ($playerA !== null && $playerB === null) {
+            $blame = 'A';
+        } elseif ($playerB !== null && $playerA === null) {
+            $blame = 'B';
+        } elseif ($playerA === null && $playerB === null) {
+            $blame = 'unknown';
+        }
+
+        $severity = max($closingKph, $speedDiff);
+
+        $posX = $this->worldCoordToMetres((int)$contactA->X);
+        $posY = $this->worldCoordToMetres((int)$contactA->Y);
+        if ($contactB->PLID) {
+            $posX = ($posX + $this->worldCoordToMetres((int)$contactB->X)) / 2.0;
+            $posY = ($posY + $this->worldCoordToMetres((int)$contactB->Y)) / 2.0;
+        }
+
+        $event = array(
+            'host_id' => $this->activeHost,
+            'track' => $this->currentTrack,
+            'event_time' => time(),
+            'closing_speed' => $closingKph,
+            'severity' => $severity,
+            'impact_type' => $impactType,
+            'blame' => $blame,
+            'angle_diff' => $angleDiff,
+            'pos_x' => $posX,
+            'pos_y' => $posY,
+            'a' => $participantA,
+            'b' => $participantB,
+        );
+
+        $this->database->recordCarContact($event);
+
+        if ($this->cruiseSystems->isActive()) {
+            $this->cruiseSystems->handleCarContact($playerA, $playerB, array(
+                'blame' => $blame,
+                'severity' => $severity,
+            ));
+        }
+
+        return PLUGIN_CONTINUE;
+    }
+
+    public function onObjectHit(IS_OBH $packet)
+    {
+        if (!$this->enabled) {
+            return PLUGIN_CONTINUE;
+        }
+
+        $player = null;
+        if ($packet->PLID && isset($this->plidMap[$packet->PLID])) {
+            $ucid = $this->plidMap[$packet->PLID];
+            if (isset($this->players[$ucid])) {
+                $player =& $this->players[$ucid];
+            }
+        }
+
+        $car = $packet->C;
+        $speedKph = $car->Speed * 3.6;
+        $closingKph = $this->closingSpeedToKph($packet->SpClose);
+        $severity = max($closingKph, $speedKph);
+
+        $event = array(
+            'host_id' => $this->activeHost,
+            'track' => $this->currentTrack,
+            'event_time' => time(),
+            'object_index' => (int)$packet->Index,
+            'object_flags' => (int)$packet->OBHFlags,
+            'object_type' => $this->describeObjectType((int)$packet->OBHFlags),
+            'pos_x' => $this->worldCoordToMetres((int)$car->X),
+            'pos_y' => $this->worldCoordToMetres((int)$car->Y),
+            'pos_z_byte' => (int)$car->Zbyte,
+            'speed' => $speedKph,
+            'closing_speed' => $closingKph,
+            'severity' => $severity,
+            'user' => $this->buildObjectParticipant($player),
+        );
+
+        $this->database->recordObjectHit($event);
+
+        if ($this->cruiseSystems->isActive() && $player !== null) {
+            $this->cruiseSystems->handleObjectHit($player, array('severity' => $severity));
         }
 
         return PLUGIN_CONTINUE;
@@ -960,6 +1105,83 @@ class serverModes extends Plugins
     public function getUcidByPlid(int $plid): ?int
     {
         return $this->plidMap[$plid] ?? null;
+    }
+
+    private function buildContactParticipantData(?array $player, CarContact $contact): array
+    {
+        return array(
+            'user_id' => (!empty($player['user_id'])) ? (int)$player['user_id'] : null,
+            'username' => $player['username'] ?? '',
+            'nickname' => $player['nickname'] ?? '',
+            'speed' => $contact->Speed * 3.6,
+            'heading' => $this->byteAngleToDegrees((int)$contact->Heading),
+            'direction' => $this->byteAngleToDegrees((int)$contact->Direction),
+            'flags' => (int)$contact->Info,
+        );
+    }
+
+    private function buildObjectParticipant(?array $player): array
+    {
+        return array(
+            'user_id' => (!empty($player['user_id'])) ? (int)$player['user_id'] : null,
+            'username' => $player['username'] ?? '',
+            'nickname' => $player['nickname'] ?? '',
+        );
+    }
+
+    private function byteAngleToDegrees(int $value): float
+    {
+        return ($value & 0xFF) * (360.0 / 256.0);
+    }
+
+    private function angularDifference(float $a, float $b): float
+    {
+        $diff = fmod(abs($a - $b), 360.0);
+        return ($diff > 180.0) ? 360.0 - $diff : $diff;
+    }
+
+    private function classifyImpact(float $angleDiff): string
+    {
+        if ($angleDiff < 30.0) {
+            return 'rear';
+        }
+        if ($angleDiff > 150.0) {
+            return 'head_on';
+        }
+        return 'side';
+    }
+
+    private function worldCoordToMetres(int $value): float
+    {
+        return $value / 16.0;
+    }
+
+    private function closingSpeedToKph(int $spClose): float
+    {
+        return (($spClose & 0x0FFF) / 10.0) * 3.6;
+    }
+
+    private function describeObjectType(int $flags): string
+    {
+        $parts = array();
+        if ($flags & OBH_LAYOUT) {
+            $parts[] = 'layout';
+        }
+        if ($flags & OBH_CAN_MOVE) {
+            $parts[] = 'movable';
+        }
+        if ($flags & OBH_WAS_MOVING) {
+            $parts[] = 'moving';
+        }
+        if ($flags & OBH_ON_SPOT) {
+            $parts[] = 'anchored';
+        }
+
+        if (empty($parts)) {
+            return 'track';
+        }
+
+        return implode('+', $parts);
     }
 
     private function bootstrapPlayerFromDatabase(int $ucid): void

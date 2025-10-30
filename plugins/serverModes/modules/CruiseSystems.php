@@ -887,6 +887,44 @@ class ServerModes_CruiseSystems
         }
     }
 
+    public function handleCarContact(?array &$playerA, ?array &$playerB, array $context): void
+    {
+        if (!$this->active) {
+            return;
+        }
+
+        $blame = $context['blame'] ?? 'shared';
+        $severity = (float)($context['severity'] ?? 0.0);
+
+        if ($playerA !== null) {
+            $this->initialisePlayerState($playerA);
+            $this->applyContactOutcome($playerA, 'A', $blame, $severity);
+        }
+
+        if ($playerB !== null) {
+            $this->initialisePlayerState($playerB);
+            $this->applyContactOutcome($playerB, 'B', $blame, $severity);
+        }
+    }
+
+    public function handleObjectHit(?array &$player, array $context): void
+    {
+        if (!$this->active || $player === null) {
+            return;
+        }
+
+        $this->initialisePlayerState($player);
+
+        $severity = (float)($context['severity'] ?? 0.0);
+
+        $contacts =& $player['state']['stats']['contacts'];
+        $contacts['object_hits'] = ($contacts['object_hits'] ?? 0) + 1;
+        $contacts['object_severity'] = ($contacts['object_severity'] ?? 0.0) + max(0.0, $severity);
+        $contacts['last_object_hit_at'] = time();
+
+        $this->markStateDirty($player);
+    }
+
     public function showGarage(int $ucid): void
     {
         if (!$this->active) {
@@ -1366,6 +1404,17 @@ class ServerModes_CruiseSystems
                 'xp' => 0.0,
                 'licenses' => 0,
                 'lap_count' => 0,
+                'contacts' => array(
+                    'total' => 0,
+                    'as_offender' => 0,
+                    'as_victim' => 0,
+                    'shared' => 0,
+                    'car_severity' => 0.0,
+                    'object_hits' => 0,
+                    'object_severity' => 0.0,
+                    'last_contact_at' => 0,
+                    'last_object_hit_at' => 0,
+                ),
             ),
             'jobs' => array(
                 'active' => null,
@@ -1387,6 +1436,24 @@ class ServerModes_CruiseSystems
                 'verified' => false,
             ),
         );
+    }
+
+    private function applyContactOutcome(array &$player, string $perspective, string $blame, float $severity): void
+    {
+        $contacts =& $player['state']['stats']['contacts'];
+        $contacts['total'] = ($contacts['total'] ?? 0) + 1;
+        $contacts['car_severity'] = ($contacts['car_severity'] ?? 0.0) + max(0.0, $severity);
+        $contacts['last_contact_at'] = time();
+
+        if ($blame === $perspective) {
+            $contacts['as_offender'] = ($contacts['as_offender'] ?? 0) + 1;
+        } elseif ($blame === 'shared' || $blame === 'unknown') {
+            $contacts['shared'] = ($contacts['shared'] ?? 0) + 1;
+        } else {
+            $contacts['as_victim'] = ($contacts['as_victim'] ?? 0) + 1;
+        }
+
+        $this->markStateDirty($player);
     }
 
     private function createVehicleRecord(): array

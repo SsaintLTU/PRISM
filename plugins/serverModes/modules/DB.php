@@ -171,6 +171,96 @@ class ServerModes_Database
         return is_array($rows) ? $rows : array();
     }
 
+    public function recordCarContact(array $event): void
+    {
+        if (!$this->ensureConnection()) {
+            return;
+        }
+
+        $participants = array(
+            'a' => $event['a'] ?? array(),
+            'b' => $event['b'] ?? array(),
+        );
+
+        $sql = 'INSERT INTO prism_contact_car_events (
+                host_id, track, event_time, closing_speed_kph, severity,
+                impact_type, blame, angle_diff, pos_x, pos_y,
+                a_user_id, a_username, a_nickname, a_speed_kph, a_heading_deg, a_direction_deg, a_flags,
+                b_user_id, b_username, b_nickname, b_speed_kph, b_heading_deg, b_direction_deg, b_flags
+            ) VALUES (
+                :host_id, :track, FROM_UNIXTIME(:event_time), :closing_speed, :severity,
+                :impact_type, :blame, :angle_diff, :pos_x, :pos_y,
+                :a_user_id, :a_username, :a_nickname, :a_speed, :a_heading, :a_direction, :a_flags,
+                :b_user_id, :b_username, :b_nickname, :b_speed, :b_heading, :b_direction, :b_flags
+            )';
+
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute(array(
+            ':host_id' => $event['host_id'] ?? '',
+            ':track' => $event['track'] ?? '',
+            ':event_time' => $event['event_time'] ?? time(),
+            ':closing_speed' => $event['closing_speed'] ?? 0.0,
+            ':severity' => $event['severity'] ?? 0.0,
+            ':impact_type' => $event['impact_type'] ?? '',
+            ':blame' => $event['blame'] ?? 'shared',
+            ':angle_diff' => $event['angle_diff'] ?? 0.0,
+            ':pos_x' => $event['pos_x'] ?? 0.0,
+            ':pos_y' => $event['pos_y'] ?? 0.0,
+            ':a_user_id' => $participants['a']['user_id'] ?? null,
+            ':a_username' => $participants['a']['username'] ?? '',
+            ':a_nickname' => $participants['a']['nickname'] ?? '',
+            ':a_speed' => $participants['a']['speed'] ?? 0.0,
+            ':a_heading' => $participants['a']['heading'] ?? 0.0,
+            ':a_direction' => $participants['a']['direction'] ?? 0.0,
+            ':a_flags' => $participants['a']['flags'] ?? 0,
+            ':b_user_id' => $participants['b']['user_id'] ?? null,
+            ':b_username' => $participants['b']['username'] ?? '',
+            ':b_nickname' => $participants['b']['nickname'] ?? '',
+            ':b_speed' => $participants['b']['speed'] ?? 0.0,
+            ':b_heading' => $participants['b']['heading'] ?? 0.0,
+            ':b_direction' => $participants['b']['direction'] ?? 0.0,
+            ':b_flags' => $participants['b']['flags'] ?? 0,
+        ));
+    }
+
+    public function recordObjectHit(array $event): void
+    {
+        if (!$this->ensureConnection()) {
+            return;
+        }
+
+        $user = $event['user'] ?? array();
+
+        $sql = 'INSERT INTO prism_contact_object_events (
+                host_id, track, event_time, object_index, object_flags, object_type,
+                pos_x, pos_y, pos_z_byte, speed_kph, closing_speed_kph, severity,
+                user_id, username, nickname
+            ) VALUES (
+                :host_id, :track, FROM_UNIXTIME(:event_time), :object_index, :object_flags, :object_type,
+                :pos_x, :pos_y, :pos_z, :speed_kph, :closing_speed, :severity,
+                :user_id, :username, :nickname
+            )';
+
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute(array(
+            ':host_id' => $event['host_id'] ?? '',
+            ':track' => $event['track'] ?? '',
+            ':event_time' => $event['event_time'] ?? time(),
+            ':object_index' => $event['object_index'] ?? 0,
+            ':object_flags' => $event['object_flags'] ?? 0,
+            ':object_type' => $event['object_type'] ?? '',
+            ':pos_x' => $event['pos_x'] ?? 0.0,
+            ':pos_y' => $event['pos_y'] ?? 0.0,
+            ':pos_z' => $event['pos_z_byte'] ?? 0,
+            ':speed_kph' => $event['speed'] ?? 0.0,
+            ':closing_speed' => $event['closing_speed'] ?? 0.0,
+            ':severity' => $event['severity'] ?? 0.0,
+            ':user_id' => $user['user_id'] ?? null,
+            ':username' => $user['username'] ?? '',
+            ':nickname' => $user['nickname'] ?? '',
+        ));
+    }
+
     public function replaceVehicleMods(array $mods): void
     {
         if (!$this->ensureConnection()) {
@@ -448,6 +538,62 @@ class ServerModes_Database
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             INDEX idx_car_code (car_code),
             INDEX idx_hex_code (hex_code)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+            $this->pdo->exec('CREATE TABLE IF NOT EXISTS prism_contact_car_events (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            host_id VARCHAR(64) NOT NULL DEFAULT "",
+            track VARCHAR(16) NOT NULL DEFAULT "",
+            event_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            closing_speed_kph DOUBLE NOT NULL DEFAULT 0,
+            severity DOUBLE NOT NULL DEFAULT 0,
+            impact_type VARCHAR(16) NOT NULL DEFAULT "",
+            blame VARCHAR(16) NOT NULL DEFAULT "",
+            angle_diff DOUBLE NOT NULL DEFAULT 0,
+            pos_x DOUBLE NOT NULL DEFAULT 0,
+            pos_y DOUBLE NOT NULL DEFAULT 0,
+            a_user_id BIGINT UNSIGNED NULL,
+            a_username VARCHAR(32) NOT NULL DEFAULT "",
+            a_nickname VARCHAR(32) NOT NULL DEFAULT "",
+            a_speed_kph DOUBLE NOT NULL DEFAULT 0,
+            a_heading_deg DOUBLE NOT NULL DEFAULT 0,
+            a_direction_deg DOUBLE NOT NULL DEFAULT 0,
+            a_flags TINYINT UNSIGNED NOT NULL DEFAULT 0,
+            b_user_id BIGINT UNSIGNED NULL,
+            b_username VARCHAR(32) NOT NULL DEFAULT "",
+            b_nickname VARCHAR(32) NOT NULL DEFAULT "",
+            b_speed_kph DOUBLE NOT NULL DEFAULT 0,
+            b_heading_deg DOUBLE NOT NULL DEFAULT 0,
+            b_direction_deg DOUBLE NOT NULL DEFAULT 0,
+            b_flags TINYINT UNSIGNED NOT NULL DEFAULT 0,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_car_events_time (event_time),
+            INDEX idx_car_events_host (host_id, track),
+            INDEX idx_car_events_user_a (a_user_id),
+            INDEX idx_car_events_user_b (b_user_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+            $this->pdo->exec('CREATE TABLE IF NOT EXISTS prism_contact_object_events (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            host_id VARCHAR(64) NOT NULL DEFAULT "",
+            track VARCHAR(16) NOT NULL DEFAULT "",
+            event_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            object_index SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+            object_flags TINYINT UNSIGNED NOT NULL DEFAULT 0,
+            object_type VARCHAR(32) NOT NULL DEFAULT "",
+            pos_x DOUBLE NOT NULL DEFAULT 0,
+            pos_y DOUBLE NOT NULL DEFAULT 0,
+            pos_z_byte TINYINT UNSIGNED NOT NULL DEFAULT 0,
+            speed_kph DOUBLE NOT NULL DEFAULT 0,
+            closing_speed_kph DOUBLE NOT NULL DEFAULT 0,
+            severity DOUBLE NOT NULL DEFAULT 0,
+            user_id BIGINT UNSIGNED NULL,
+            username VARCHAR(32) NOT NULL DEFAULT "",
+            nickname VARCHAR(32) NOT NULL DEFAULT "",
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_object_events_time (event_time),
+            INDEX idx_object_events_host (host_id, track),
+            INDEX idx_object_events_user (user_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
         } catch (PDOException $e) {
             console('serverModes: failed to ensure schema - ' . $e->getMessage());
