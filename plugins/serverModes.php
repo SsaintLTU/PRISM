@@ -1,58 +1,65 @@
 <?php
-require_once __DIR__ . '/serverModes/Database.php';
-require_once __DIR__ . '/serverModes/Modes/BaseMode.php';
-require_once __DIR__ . '/serverModes/Modes/CruiseMode.php';
-require_once __DIR__ . '/serverModes/Modes/RaceMode.php';
-require_once __DIR__ . '/serverModes/Modes/DriftMode.php';
+require_once __DIR__ . '/serverModes/modules/DB.php';
+require_once __DIR__ . '/serverModes/modules/ModeBase.php';
+require_once __DIR__ . '/serverModes/modules/ModeCruise.php';
+require_once __DIR__ . '/serverModes/modules/ModeDrift.php';
+require_once __DIR__ . '/serverModes/modules/ModeRace.php';
+require_once __DIR__ . '/serverModes/modules/TrafficLightController.php';
 
 class serverModes extends Plugins
 {
-    const URL = '';
-    const NAME = 'Server Mode Toolkit';
+    const NAME = 'Server Modes';
     const AUTHOR = 'OpenAI';
-    const VERSION = '1.0.0';
-    const DESCRIPTION = 'Shared cruise / drift / race plugin with MySQL persistence and periodic snapshots.';
+    const VERSION = '2.0.0';
+    const DESCRIPTION = 'Cruise / drift / race lifecycle manager with MySQL persistence and traffic light control.';
 
-    private $config = array();
-    private $db;
-    private $enabled = false;
-    private $players = array();
-    private $plidMap = array();
-    private $modes = array();
-    private $activeMode = null;
-    private $activeHost = '';
-    private $snapshotInterval = 120;
-    private $flushInterval = 15;
+    private array $config = array();
+    private ?ServerModes_Database $database = null;
+    private bool $enabled = false;
+
+    private array $players = array();
+    private array $plidMap = array();
+
+    /** @var array<string, ServerModes_Mode> */
+    private array $modes = array();
+    private ?ServerModes_Mode $activeMode = null;
+
+    private string $activeHost = '';
+    private array $hostModeMap = array();
+
+    private int $snapshotInterval = 60;
+    private int $autosaveInterval = 15;
+
+    private ?ServerModes_TrafficLightController $trafficLights = null;
 
     public function __construct()
     {
         $this->config = $this->loadConfig();
-        $this->snapshotInterval = max(30, (int)($this->config['general']['snapshot_interval'] ?? 120));
-        $this->flushInterval = max(5, (int)($this->config['general']['flush_interval'] ?? 15));
+        $this->snapshotInterval = max(10, (int)($this->config['general']['snapshot_interval'] ?? 60));
+        $this->autosaveInterval = max(5, (int)($this->config['general']['autosave_interval'] ?? 15));
 
-        $autoCreate = ($this->config['general']['auto_create_tables'] ?? true) ? true : false;
-        $this->db = new ServerModes_Database($this->config['database'], $autoCreate);
-
-        if (!$this->db->isAvailable()) {
-            console('serverModes: PDO MySQL extension is not available; plugin disabled.');
+        $this->database = new ServerModes_Database($this->config['database'] ?? array());
+        if (!$this->database->isAvailable()) {
+            console('serverModes: PDO extension is not available, plugin disabled.');
             return;
         }
 
-        if (!$this->db->ensureConnection()) {
-            console('serverModes: database connection failed; plugin disabled.');
+        if (!$this->database->ensureConnection()) {
+            console('serverModes: database connection failed, plugin disabled.');
             return;
         }
 
         $this->modes = array(
-            'cruise' => new ServerModes_CruiseMode($this, 'cruise'),
-            'race' => new ServerModes_RaceMode($this, 'race'),
-            'drift' => new ServerModes_DriftMode($this, 'drift'),
+            'cruise' => new ServerModes_ModeCruise($this, $this->config['mode_cruise'] ?? array()),
+            'drift'  => new ServerModes_ModeDrift($this, $this->config['mode_drift'] ?? array()),
+            'race'   => new ServerModes_ModeRace($this, $this->config['mode_race'] ?? array()),
         );
 
-        $this->enabled = true;
+        $this->hostModeMap = $this->config['hosts'] ?? array();
 
-        $initialHost = $this->resolveCurrentHost();
-        $this->activateModeForHost($initialHost);
+        $this->trafficLights = new ServerModes_TrafficLightController($this, $this->config['traffic_lights'] ?? array());
+
+        $this->enabled = true;
 
         $this->registerPacket('onPrismConnect', ISP_VER);
         $this->registerPacket('onClientConnect', ISP_NCN);
@@ -61,120 +68,139 @@ class serverModes extends Plugins
         $this->registerPacket('onPlayerJoinRace', ISP_NPL);
         $this->registerPacket('onPlayerLeaveRace', ISP_PLL);
         $this->registerPacket('onCarInfo', ISP_MCI);
-        $this->registerPacket('onLap', ISP_LAP);
+        $this->registerPacket('onLapCompleted', ISP_LAP);
 
-        $this->createNamedTimer('serverModes.flush', 'handleFlushTimer', $this->flushInterval, Timer::REPEAT);
+        $this->createNamedTimer('serverModes.tick', 'handleTickTimer', 1.0, Timer::REPEAT);
+        $this->createNamedTimer('serverModes.autosave', 'handleAutosaveTimer', $this->autosaveInterval, Timer::REPEAT);
     }
 
     public function __destruct()
-    {
-        $this->flushAll(true);
-    }
-
-    public function onPrismConnect(IS_VER $packet)
     {
         if (!$this->enabled) {
             return;
         }
 
-        $hostName = $this->resolveCurrentHost();
-        $this->activateModeForHost($hostName);
-        foreach ($this->players as $ucid => &$player) {
-            $player['mode'] = $this->activeMode ? $this->activeMode->getKey() : ($player['mode'] ?? 'general');
+        foreach (array_keys($this->players) as $ucid) {
+            $this->flushPlayer($ucid, true);
         }
-        unset($player);
-        console(sprintf('serverModes: tracking players for host "%s" in %s mode.', $hostName, $this->activeMode->getKey()));
+    }
+
+    public function onPrismConnect(IS_VER $packet)
+    {
+        if (!$this->enabled) {
+            return PLUGIN_CONTINUE;
+        }
+
+        $this->activateModeForHost($this->getCurrentHostId());
+
+        if ($this->activeMode) {
+            console(sprintf('serverModes: host "%s" using %s mode.', $this->activeHost, $this->activeMode->getKey()));
+        } else {
+            console(sprintf('serverModes: host "%s" does not map to a managed mode.', $this->activeHost));
+        }
+
+        return PLUGIN_CONTINUE;
     }
 
     public function onClientConnect(IS_NCN $NCN)
     {
         if (!$this->enabled || $NCN->UCID == 0) {
-            return;
+            return PLUGIN_CONTINUE;
         }
 
-        $player = $this->ensurePlayer($NCN->UCID);
+        $player =& $this->ensurePlayer($NCN->UCID);
         $player['username'] = $NCN->UName;
         $player['nickname'] = $NCN->PName;
-        $player['join_time'] = time();
-        $player['last_update'] = microtime(true);
+        $player['connected_at'] = time();
+        $player['last_seen'] = time();
         $player['host'] = $this->activeHost;
-        $player['mode'] = $this->activeMode ? $this->activeMode->getKey() : 'general';
+        $player['mode_key'] = $this->activeMode ? $this->activeMode->getKey() : '';
         $player['dirty'] = true;
-        $this->players[$NCN->UCID] = $player;
 
         if ($this->activeMode) {
-            $playerRef =& $this->players[$NCN->UCID];
-            $this->activeMode->onPlayerConnected($playerRef);
+            $this->activeMode->onPlayerConnected($player);
         }
+
+        return PLUGIN_CONTINUE;
     }
 
     public function onClientInfo(IS_NCI $NCI)
     {
         if (!$this->enabled || $NCI->UCID == 0) {
-            return;
+            return PLUGIN_CONTINUE;
         }
 
-        $player = $this->ensurePlayer($NCI->UCID);
-        $player['user_id'] = $NCI->UserID;
+        $player =& $this->ensurePlayer($NCI->UCID);
+        $player['user_id'] = (int)$NCI->UserID;
         $player['dirty'] = true;
-        $this->players[$NCI->UCID] = $player;
 
         $this->bootstrapPlayerFromDatabase($NCI->UCID);
+
+        return PLUGIN_CONTINUE;
     }
 
     public function onClientDisconnect(IS_CNL $CNL)
     {
         if (!$this->enabled || $CNL->UCID == 0) {
-            return;
+            return PLUGIN_CONTINUE;
+        }
+
+        if (isset($this->players[$CNL->UCID]) && $this->activeMode) {
+            $player =& $this->players[$CNL->UCID];
+            $this->activeMode->onPlayerDisconnected($player);
         }
 
         $this->flushPlayer($CNL->UCID, true);
         unset($this->players[$CNL->UCID]);
 
         foreach ($this->plidMap as $plid => $ucid) {
-            if ($ucid == $CNL->UCID) {
+            if ($ucid === $CNL->UCID) {
                 unset($this->plidMap[$plid]);
             }
         }
+
+        return PLUGIN_CONTINUE;
     }
 
     public function onPlayerJoinRace(IS_NPL $NPL)
     {
         if (!$this->enabled) {
-            return;
+            return PLUGIN_CONTINUE;
         }
 
         $this->plidMap[$NPL->PLID] = $NPL->UCID;
-        if (isset($this->players[$NPL->UCID])) {
-            $this->players[$NPL->UCID]['last_compcar'][$NPL->PLID] = null;
-        }
+        $player =& $this->ensurePlayer($NPL->UCID);
+        $player['positions'][$NPL->PLID] = null;
+
+        return PLUGIN_CONTINUE;
     }
 
     public function onPlayerLeaveRace(IS_PLL $PLL)
     {
         if (!$this->enabled) {
-            return;
+            return PLUGIN_CONTINUE;
         }
 
         if (isset($this->plidMap[$PLL->PLID])) {
             $ucid = $this->plidMap[$PLL->PLID];
             unset($this->plidMap[$PLL->PLID]);
-            if (isset($this->players[$ucid]['last_compcar'][$PLL->PLID])) {
-                unset($this->players[$ucid]['last_compcar'][$PLL->PLID]);
+            if (isset($this->players[$ucid]['positions'][$PLL->PLID])) {
+                unset($this->players[$ucid]['positions'][$PLL->PLID]);
             }
         }
+
+        return PLUGIN_CONTINUE;
     }
 
     public function onCarInfo(IS_MCI $MCI)
     {
         if (!$this->enabled) {
-            return;
+            return PLUGIN_CONTINUE;
         }
 
-        $now = microtime(true);
-        foreach ($MCI->Info as $compCar) {
-            $plid = $compCar->PLID;
-            if (!isset($this->plidMap[$plid])) {
+        foreach ($MCI->Info as $carInfo) {
+            $plid = $carInfo->PLID;
+            if ($plid == 0 || !isset($this->plidMap[$plid])) {
                 continue;
             }
 
@@ -184,369 +210,386 @@ class serverModes extends Plugins
             }
 
             $player =& $this->players[$ucid];
-            $previous = $player['last_compcar'][$plid] ?? null;
-            $player['last_compcar'][$plid] = array(
-                'time' => $now,
-                'x' => $compCar->X,
-                'y' => $compCar->Y,
-                'z' => $compCar->Z,
-            );
-
-            if ($previous === null) {
-                continue;
-            }
-
-            $deltaSeconds = max(0.0, $now - $previous['time']);
-            $dx = $compCar->X - $previous['x'];
-            $dy = $compCar->Y - $previous['y'];
-            $dz = $compCar->Z - $previous['z'];
-            $distance = sqrt(($dx * $dx) + ($dy * $dy) + ($dz * $dz)) / 65536.0;
-
-            if ($distance > 0) {
-                $player['session_stats']['distance'] += $distance;
-                $player['last_activity'] = time();
-                if (isset($player['flags']['afk_notified']) && $player['flags']['afk_notified']) {
-                    $player['flags']['afk_notified'] = false;
-                }
-            }
-
-            $player['session_stats']['time'] += $deltaSeconds;
-
-            if ($this->activeMode) {
-                $this->activeMode->onCompCar($player, $compCar, $deltaSeconds, $distance);
-            }
-
-            $player['dirty'] = true;
+            $this->processMovement($player, $plid, $carInfo);
         }
+
+        return PLUGIN_CONTINUE;
     }
 
-    public function onLap(IS_LAP $lap)
+    public function onLapCompleted(IS_LAP $lap)
     {
         if (!$this->enabled) {
-            return;
+            return PLUGIN_CONTINUE;
         }
 
         $plid = $lap->PLID;
-        if (!isset($this->plidMap[$plid])) {
-            return;
+        if ($plid == 0 || !isset($this->plidMap[$plid])) {
+            return PLUGIN_CONTINUE;
         }
 
         $ucid = $this->plidMap[$plid];
         if (!isset($this->players[$ucid])) {
-            return;
+            return PLUGIN_CONTINUE;
         }
 
         $player =& $this->players[$ucid];
-        if ($lap->LTime > 0 && (!isset($player['best_lap_ms']) || $player['best_lap_ms'] === null || $lap->LTime < $player['best_lap_ms'])) {
-            $player['best_lap_ms'] = $lap->LTime;
-            $player['dirty'] = true;
+        $player['session']['lap_count'] += 1;
+        $player['dirty'] = true;
+
+        if ($this->activeMode) {
+            $this->activeMode->onLapCompleted($player, $lap);
+        }
+
+        return PLUGIN_CONTINUE;
+    }
+
+    public function handleTickTimer()
+    {
+        if (!$this->enabled) {
+            return PLUGIN_CONTINUE;
+        }
+
+        if ($this->trafficLights) {
+            $this->trafficLights->update();
         }
 
         if ($this->activeMode) {
-            $this->activeMode->onLap($player, $lap);
+            $this->activeMode->tick($this->players);
         }
+
+        return PLUGIN_CONTINUE;
     }
 
-    public function handleFlushTimer()
+    public function handleAutosaveTimer()
     {
         if (!$this->enabled) {
-            return;
+            return PLUGIN_CONTINUE;
         }
 
-        $this->flushAll(false);
-    }
-
-    private function flushAll($force)
-    {
-        if (!$this->enabled) {
-            return;
-        }
-
-        $now = time();
         foreach (array_keys($this->players) as $ucid) {
-            $this->flushPlayer($ucid, $force, $now);
+            $this->flushPlayer($ucid, false);
+        }
+
+        return PLUGIN_CONTINUE;
+    }
+
+    public function applyModeConfig(string $modeKey, array $config): void
+    {
+        if (isset($this->modes[$modeKey])) {
+            $this->modes[$modeKey]->applyConfig($config);
         }
     }
 
-    private function flushPlayer($ucid, $force = false, $now = null)
+    public function getMode(string $modeKey): ?ServerModes_Mode
     {
-        if (!$this->enabled || !isset($this->players[$ucid])) {
+        return $this->modes[$modeKey] ?? null;
+    }
+
+    public function getDatabase(): ?ServerModes_Database
+    {
+        return $this->database;
+    }
+
+    public function getSnapshotInterval(): int
+    {
+        return $this->snapshotInterval;
+    }
+
+    public function getAutosaveInterval(): int
+    {
+        return $this->autosaveInterval;
+    }
+
+    public function getTrafficLights(): ?ServerModes_TrafficLightController
+    {
+        return $this->trafficLights;
+    }
+
+    public function getActiveHostId(): string
+    {
+        return $this->activeHost;
+    }
+
+    private function processMovement(array &$player, int $plid, CompCar $info): void
+    {
+        $current = array(
+            'x' => (int)$info->X,
+            'y' => (int)$info->Y,
+            'z' => (int)$info->Z,
+            'ts' => microtime(true),
+        );
+
+        $previous = $player['positions'][$plid] ?? null;
+        $player['positions'][$plid] = $current;
+
+        if (!$previous) {
             return;
         }
 
-        if ($now === null) {
-            $now = time();
+        $dx = ($current['x'] - $previous['x']) / 65536.0;
+        $dy = ($current['y'] - $previous['y']) / 65536.0;
+        $dz = ($current['z'] - $previous['z']) / 65536.0;
+        $distanceMetres = sqrt(($dx * $dx) + ($dy * $dy) + ($dz * $dz));
+
+        if ($distanceMetres <= 0.01 || $distanceMetres > 500) {
+            // Ignore tiny jitter and large teleports.
+            return;
         }
 
-        $player =& $this->players[$ucid];
+        $distanceKm = $distanceMetres / 1000.0;
+        $player['session']['distance_km'] += $distanceKm;
+        $player['dirty'] = true;
+        $player['last_seen'] = time();
+
+        $speedMs = ($info->Speed * (100.0 / 32768.0));
+        $speedKph = $speedMs * 3.6;
 
         if ($this->activeMode) {
-            $this->activeMode->onPeriodic($player, $now);
+            $this->activeMode->processMovement($player, $distanceKm, $speedKph, $info);
         }
-
-        $shouldSnapshot = $force;
-        if (!$shouldSnapshot) {
-            $lastSnapshot = $player['last_snapshot'] ?? 0;
-            if (($now - $lastSnapshot) >= $this->snapshotInterval) {
-                $shouldSnapshot = true;
-            }
-        }
-
-        if (!$force && empty($player['dirty']) && !$shouldSnapshot) {
-            return;
-        }
-
-        $aggregate = $this->buildAggregate($player);
-        if ($aggregate === null) {
-            return;
-        }
-
-        $this->db->savePlayer($aggregate);
-
-        if ($shouldSnapshot) {
-            $snapshot = $this->buildSnapshot($player);
-            if ($snapshot !== null) {
-                $this->db->recordSnapshot($snapshot);
-                $player['snapshot_baseline'] = $player['session_stats'];
-                $player['last_snapshot'] = $now;
-            }
-        }
-
-        $player['dirty'] = false;
     }
 
-    private function buildAggregate(array $player)
-    {
-        if (($player['username'] ?? '') === '') {
-            return null;
-        }
-
-        $base = $player['base_totals'] ?? array();
-        $session = $player['session_stats'] ?? array();
-
-        return array(
-            'user_id' => $player['user_id'] ?? null,
-            'username' => $player['username'],
-            'nickname' => $player['nickname'] ?? '',
-            'mode' => $player['mode'] ?? 'general',
-            'host' => $player['host'] ?? $this->activeHost,
-            'total_distance' => ($base['distance'] ?? 0) + ($session['distance'] ?? 0),
-            'total_time' => (int)(($base['time'] ?? 0) + ($session['time'] ?? 0)),
-            'currency' => ($base['currency'] ?? 0) + ($session['currency'] ?? 0),
-            'best_lap' => $player['best_lap_ms'] ?? null,
-            'drift_score' => ($base['drift'] ?? 0) + ($session['drift'] ?? 0),
-            'session_distance' => $session['distance'] ?? 0,
-            'session_time' => (int)($session['time'] ?? 0),
-            'session_currency' => $session['currency'] ?? 0,
-            'session_drift' => $session['drift'] ?? 0,
-        );
-    }
-
-    private function buildSnapshot(array $player)
-    {
-        $baseline = $player['snapshot_baseline'] ?? array();
-        $session = $player['session_stats'] ?? array();
-
-        $distanceDelta = ($session['distance'] ?? 0) - ($baseline['distance'] ?? 0);
-        $timeDelta = ($session['time'] ?? 0) - ($baseline['time'] ?? 0);
-        $currencyDelta = ($session['currency'] ?? 0) - ($baseline['currency'] ?? 0);
-        $driftDelta = ($session['drift'] ?? 0) - ($baseline['drift'] ?? 0);
-
-        if ($distanceDelta <= 0.01 && $timeDelta <= 1 && $currencyDelta <= 0.01 && $driftDelta <= 0.01) {
-            return null;
-        }
-
-        return array(
-            'user_id' => $player['user_id'] ?? null,
-            'username' => $player['username'] ?? '',
-            'mode' => $player['mode'] ?? 'general',
-            'session_distance' => max(0, $distanceDelta),
-            'session_time' => max(0, (int)$timeDelta),
-            'session_currency' => max(0, $currencyDelta),
-            'session_drift' => max(0, $driftDelta),
-        );
-    }
-
-    private function ensurePlayer($ucid)
-    {
-        if (isset($this->players[$ucid])) {
-            return $this->players[$ucid];
-        }
-
-        return array(
-            'ucid' => $ucid,
-            'user_id' => null,
-            'username' => '',
-            'nickname' => '',
-            'mode' => $this->activeMode ? $this->activeMode->getKey() : 'general',
-            'host' => $this->activeHost,
-            'join_time' => time(),
-            'last_update' => microtime(true),
-            'last_activity' => time(),
-            'session_stats' => array(
-                'distance' => 0.0,
-                'time' => 0.0,
-                'currency' => 0.0,
-                'drift' => 0.0,
-            ),
-            'snapshot_baseline' => array(
-                'distance' => 0.0,
-                'time' => 0.0,
-                'currency' => 0.0,
-                'drift' => 0.0,
-            ),
-            'base_totals' => array(
-                'distance' => 0.0,
-                'time' => 0.0,
-                'currency' => 0.0,
-                'drift' => 0.0,
-            ),
-            'best_lap_ms' => null,
-            'last_compcar' => array(),
-            'last_snapshot' => 0,
-            'dirty' => false,
-            'flags' => array(),
-        );
-    }
-
-    private function bootstrapPlayerFromDatabase($ucid)
+    private function flushPlayer(int $ucid, bool $force): void
     {
         if (!isset($this->players[$ucid])) {
             return;
         }
 
         $player =& $this->players[$ucid];
-        $userId = $player['user_id'] ?? null;
-        $username = $player['username'] ?? '';
-
-        if (!$userId && $username === '') {
+        if (empty($player['user_id'])) {
             return;
         }
 
-        $record = $this->db->fetchPlayer($userId, $username);
+        $now = time();
+        $hasProgress = ($player['session']['distance_km'] > 0.0001)
+            || ($player['session']['money'] > 0.0001)
+            || ($player['session']['xp'] > 0.0001)
+            || ($player['session']['lap_count'] > 0);
+
+        if (!$force && isset($player['last_saved']) && ($now - $player['last_saved']) < $this->autosaveInterval && !$hasProgress) {
+            return;
+        }
+
+        if (!$force && !$hasProgress && !$player['dirty']) {
+            return;
+        }
+
+        $totals = array(
+            'distance_km' => $player['lifetime']['distance_km'] + $player['session']['distance_km'],
+            'money' => $player['lifetime']['money'] + $player['session']['money'],
+            'xp' => $player['lifetime']['xp'] + $player['session']['xp'],
+            'lap_count' => $player['lifetime']['lap_count'] + $player['session']['lap_count'],
+        );
+
+        $this->database->savePlayer(array(
+            'user_id' => $player['user_id'],
+            'username' => $player['username'],
+            'nickname' => $player['nickname'],
+            'distance' => $totals['distance_km'],
+            'earnings' => $totals['money'],
+            'xp' => $totals['xp'],
+            'lap_count' => $totals['lap_count'],
+            'mode' => $player['mode_key'],
+            'last_seen' => $now,
+        ));
+
+        $shouldSnapshot = $hasProgress && ($force || ($now - $player['last_snapshot']) >= $this->snapshotInterval);
+        if ($shouldSnapshot) {
+            $this->database->recordSnapshot(array(
+                'user_id' => $player['user_id'],
+                'mode' => $player['mode_key'],
+                'distance' => $player['session']['distance_km'],
+                'earnings' => $player['session']['money'],
+                'xp' => $player['session']['xp'],
+                'lap_count' => $player['session']['lap_count'],
+            ));
+            $player['last_snapshot'] = $now;
+        }
+
+        $player['lifetime']['distance_km'] = $totals['distance_km'];
+        $player['lifetime']['money'] = $totals['money'];
+        $player['lifetime']['xp'] = $totals['xp'];
+        $player['lifetime']['lap_count'] = $totals['lap_count'];
+
+        $player['session'] = array(
+            'distance_km' => 0.0,
+            'money' => 0.0,
+            'xp' => 0.0,
+            'lap_count' => 0,
+        );
+
+        $player['dirty'] = false;
+        $player['last_saved'] = $now;
+    }
+
+    private function &ensurePlayer(int $ucid): array
+    {
+        if (!isset($this->players[$ucid])) {
+            $this->players[$ucid] = array(
+                'ucid' => $ucid,
+                'user_id' => null,
+                'username' => '',
+                'nickname' => '',
+                'host' => $this->activeHost,
+                'mode_key' => $this->activeMode ? $this->activeMode->getKey() : '',
+                'connected_at' => time(),
+                'last_seen' => time(),
+                'last_saved' => time(),
+                'last_snapshot' => time(),
+                'lifetime' => array(
+                    'distance_km' => 0.0,
+                    'money' => 0.0,
+                    'xp' => 0.0,
+                    'lap_count' => 0,
+                ),
+                'session' => array(
+                    'distance_km' => 0.0,
+                    'money' => 0.0,
+                    'xp' => 0.0,
+                    'lap_count' => 0,
+                ),
+                'positions' => array(),
+                'dirty' => false,
+            );
+        }
+
+        return $this->players[$ucid];
+    }
+
+    private function bootstrapPlayerFromDatabase(int $ucid): void
+    {
+        if (empty($this->players[$ucid]['user_id'])) {
+            return;
+        }
+
+        $userId = $this->players[$ucid]['user_id'];
+        $record = $this->database->loadPlayer($userId);
         if (!$record) {
             return;
         }
 
-        $player['base_totals'] = array(
-            'distance' => (float)($record['total_distance'] ?? 0),
-            'time' => (float)($record['total_time'] ?? 0),
-            'currency' => (float)($record['currency'] ?? 0),
-            'drift' => (float)($record['drift_score'] ?? 0),
-        );
-
-        if (isset($record['best_lap']) && $record['best_lap'] !== null) {
-            $player['best_lap_ms'] = (int)$record['best_lap'];
-        }
-
-        $player['mode'] = $record['mode'] ?? ($player['mode'] ?? 'general');
-        $player['dirty'] = true;
+        $player =& $this->players[$ucid];
+        $player['lifetime']['distance_km'] = (float)$record['total_distance'];
+        $player['lifetime']['money'] = (float)$record['total_earnings'];
+        $player['lifetime']['xp'] = (float)$record['total_xp'];
+        $player['lifetime']['lap_count'] = (int)$record['lap_count'];
+        $player['mode_key'] = $record['last_mode'] ?: ($this->activeMode ? $this->activeMode->getKey() : '');
     }
 
-    private function loadConfig()
+    private function activateModeForHost(?string $hostId): void
     {
-        $defaults = array(
+        $hostId = $hostId ?? '';
+        $previous = $this->activeMode;
+        if ($previous) {
+            $previous->onDeactivate();
+        }
+
+        $this->activeHost = $hostId;
+        $modeKey = $this->hostModeMap[$hostId] ?? null;
+        if ($modeKey && isset($this->modes[$modeKey])) {
+            $this->activeMode = $this->modes[$modeKey];
+        } else {
+            $this->activeMode = null;
+        }
+
+        $trafficConfig = $this->config['traffic_lights'] ?? array();
+        $hostSection = 'traffic_lights.host_' . $hostId;
+        if (isset($this->config[$hostSection]) && is_array($this->config[$hostSection])) {
+            $trafficConfig = array_replace($trafficConfig, $this->config[$hostSection]);
+        }
+
+        if ($this->activeMode) {
+            $modeKey = $this->activeMode->getKey();
+            $modeConfig = $this->config['mode_' . $modeKey] ?? array();
+            $hostModeSection = 'mode_' . $modeKey . '.host_' . $hostId;
+            if (isset($this->config[$hostModeSection]) && is_array($this->config[$hostModeSection])) {
+                $modeConfig = array_replace($modeConfig, $this->config[$hostModeSection]);
+            }
+            $this->activeMode->applyConfig($modeConfig);
+
+            $modeSection = 'traffic_lights.' . $this->activeMode->getKey();
+            if (isset($this->config[$modeSection]) && is_array($this->config[$modeSection])) {
+                $trafficConfig = array_replace($trafficConfig, $this->config[$modeSection]);
+            }
+
+            if ($this->trafficLights) {
+                $this->trafficLights->applyConfig($trafficConfig);
+            }
+
+            $this->activeMode->onActivate();
+        } elseif ($this->trafficLights) {
+            $this->trafficLights->applyConfig($trafficConfig);
+        }
+
+        foreach ($this->players as &$player) {
+            $player['mode_key'] = $this->activeMode ? $this->activeMode->getKey() : '';
+        }
+        unset($player);
+    }
+
+    private function loadConfig(): array
+    {
+        $default = $this->getDefaultConfig();
+
+        $config = array();
+        $path = ROOTPATH . '/configs/serverModes.ini';
+        if (is_file($path)) {
+            $config = parse_ini_file($path, true, INI_SCANNER_TYPED);
+        } else {
+            $sample = ROOTPATH . '/configs/serverModes-sample.ini';
+            if (is_file($sample)) {
+                $config = parse_ini_file($sample, true, INI_SCANNER_TYPED);
+            }
+        }
+
+        if (!is_array($config)) {
+            $config = array();
+        }
+
+        return array_replace_recursive($default, $config);
+    }
+
+    private function getDefaultConfig(): array
+    {
+        return array(
             'database' => array(
-                'host' => '127.0.0.1',
-                'port' => 3306,
-                'database' => 'lfs',
-                'username' => 'lfs',
-                'password' => 'secret',
-                'charset' => 'utf8mb4',
+                'dsn' => 'mysql:host=127.0.0.1;dbname=lfs;charset=utf8mb4',
+                'username' => 'lfsuser',
+                'password' => 'changeme',
             ),
             'general' => array(
-                'snapshot_interval' => 120,
-                'flush_interval' => 15,
-                'auto_create_tables' => true,
+                'snapshot_interval' => 60,
+                'autosave_interval' => 15,
             ),
-            'modes' => array(
-                '*' => 'cruise',
+            'hosts' => array(
+                'cruise' => 'cruise',
+                'drift' => 'drift',
+                'race' => 'race',
             ),
-            'mode:cruise' => array(
-                'credits_per_km' => 6.5,
-                'idle_timeout' => 180,
+            'mode_cruise' => array(
+                'money_per_km' => 7.5,
+                'xp_per_km' => 0.25,
+                'speed_limit' => 0,
+                'penalty_multiplier' => 0.5,
             ),
-            'mode:drift' => array(
-                'minimum_angle' => 10,
+            'mode_drift' => array(
+                'money_per_km' => 5.0,
+                'xp_per_km' => 0.4,
+                'angle_bonus' => 1.4,
+                'angle_threshold' => 35.0,
             ),
-            'mode:race' => array(),
+            'mode_race' => array(
+                'money_per_km' => 9.0,
+                'xp_per_km' => 0.3,
+                'lap_bonus' => 20.0,
+                'lap_xp' => 1.5,
+            ),
+            'traffic_lights' => array(
+                'enabled' => false,
+                'index' => 149,
+                'sequence' => 'red:25,red_yellow:3,green:25,yellow:3',
+                'lights' => '1@0,2@15',
+            ),
         );
-
-        $configPath = ROOTPATH . 'configs/serverModes.ini';
-        if (!file_exists($configPath)) {
-            return $defaults;
-        }
-
-        $parsed = parse_ini_file($configPath, true, INI_SCANNER_TYPED);
-        if ($parsed === false) {
-            console('serverModes: failed to parse serverModes.ini, using defaults.');
-            return $defaults;
-        }
-
-        foreach ($parsed as $section => $values) {
-            if (!is_array($values)) {
-                continue;
-            }
-            if (isset($defaults[$section]) && is_array($defaults[$section])) {
-                $defaults[$section] = array_merge($defaults[$section], $values);
-            } else {
-                $defaults[$section] = $values;
-            }
-        }
-
-        return $defaults;
-    }
-
-    private function resolveCurrentHost()
-    {
-        global $PRISM;
-        if (isset($PRISM) && isset($PRISM->hosts)) {
-            $host = $PRISM->hosts->getCurrentHost();
-            if ($host !== null) {
-                return strtolower($host);
-            }
-        }
-
-        return '';
-    }
-
-    private function activateModeForHost($hostName)
-    {
-        $this->activeHost = $hostName;
-        $modeKey = $this->determineMode($hostName);
-
-        if (!isset($this->modes[$modeKey])) {
-            $modeKey = 'cruise';
-        }
-
-        $this->activeMode = $this->modes[$modeKey];
-        $configKey = 'mode:' . $modeKey;
-        $modeConfig = $this->config[$configKey] ?? array();
-        $this->activeMode->activate($modeConfig, $hostName);
-    }
-
-    private function determineMode($hostName)
-    {
-        $mapping = $this->config['modes'] ?? array('*' => 'cruise');
-        $hostName = (string)$hostName;
-        $default = $mapping['*'] ?? 'cruise';
-
-        foreach ($mapping as $pattern => $mode) {
-            if ($pattern === '*') {
-                continue;
-            }
-
-            if (function_exists('fnmatch')) {
-                if (fnmatch($pattern, $hostName, FNM_CASEFOLD)) {
-                    return strtolower($mode);
-                }
-            } else {
-                if (strcasecmp($pattern, $hostName) === 0) {
-                    return strtolower($mode);
-                }
-            }
-        }
-
-        return strtolower($default);
     }
 }
