@@ -5,6 +5,7 @@ require_once __DIR__ . '/serverModes/modules/ModeCruise.php';
 require_once __DIR__ . '/serverModes/modules/ModeDrift.php';
 require_once __DIR__ . '/serverModes/modules/ModeRace.php';
 require_once __DIR__ . '/serverModes/modules/TrafficLightController.php';
+require_once __DIR__ . '/serverModes/modules/CruiseSystems.php';
 
 class serverModes extends Plugins
 {
@@ -31,6 +32,7 @@ class serverModes extends Plugins
     private int $autosaveInterval = 15;
 
     private ?ServerModes_TrafficLightController $trafficLights = null;
+    private ServerModes_CruiseSystems $cruiseSystems;
 
     public function __construct()
     {
@@ -49,8 +51,10 @@ class serverModes extends Plugins
             return;
         }
 
+        $this->cruiseSystems = new ServerModes_CruiseSystems($this, $this->config['mode_cruise'] ?? array());
+
         $this->modes = array(
-            'cruise' => new ServerModes_ModeCruise($this, $this->config['mode_cruise'] ?? array()),
+            'cruise' => new ServerModes_ModeCruise($this, $this->cruiseSystems, $this->config['mode_cruise'] ?? array()),
             'drift'  => new ServerModes_ModeDrift($this, $this->config['mode_drift'] ?? array()),
             'race'   => new ServerModes_ModeRace($this, $this->config['mode_race'] ?? array()),
         );
@@ -69,6 +73,16 @@ class serverModes extends Plugins
         $this->registerPacket('onPlayerLeaveRace', ISP_PLL);
         $this->registerPacket('onCarInfo', ISP_MCI);
         $this->registerPacket('onLapCompleted', ISP_LAP);
+        $this->registerPacket('onButtonClick', ISP_BTC);
+        $this->registerPacket('onButtonText', ISP_BTT);
+        $this->registerPacket('onButtonClear', ISP_BFN);
+        $this->registerPacket('onUserControlObject', ISP_UCO);
+
+        $this->registerSayCommand('bank', 'commandCruiseBank', 'Open the cruise bank.');
+        $this->registerSayCommand('teleport', 'commandCruiseTeleport', 'Open teleport menu.');
+        $this->registerSayCommand('regitra', 'commandCruiseRegitra', 'Open vehicle registry.');
+        $this->registerSayCommand('garage', 'commandCruiseGarage', 'Show owned vehicles.');
+        $this->registerSayCommand('chase', 'commandCruiseChase', 'Open the police menu.');
 
         $this->createNamedTimer('serverModes.tick', 'handleTickTimer', 1.0, Timer::REPEAT);
         $this->createNamedTimer('serverModes.autosave', 'handleAutosaveTimer', $this->autosaveInterval, Timer::REPEAT);
@@ -100,6 +114,56 @@ class serverModes extends Plugins
         }
 
         return PLUGIN_CONTINUE;
+    }
+
+    public function commandCruiseBank($cmd, $ucid, $packet = null)
+    {
+        if (!$this->enabled || !$this->cruiseSystems->isActive()) {
+            return PLUGIN_HANDLED;
+        }
+
+        $this->cruiseSystems->showBankUi($ucid);
+        return PLUGIN_HANDLED;
+    }
+
+    public function commandCruiseTeleport($cmd, $ucid, $packet = null)
+    {
+        if (!$this->enabled || !$this->cruiseSystems->isActive()) {
+            return PLUGIN_HANDLED;
+        }
+
+        $this->cruiseSystems->showTeleportMenu($ucid);
+        return PLUGIN_HANDLED;
+    }
+
+    public function commandCruiseRegitra($cmd, $ucid, $packet = null)
+    {
+        if (!$this->enabled || !$this->cruiseSystems->isActive()) {
+            return PLUGIN_HANDLED;
+        }
+
+        $this->cruiseSystems->showRegitraMenu($ucid);
+        return PLUGIN_HANDLED;
+    }
+
+    public function commandCruiseGarage($cmd, $ucid, $packet = null)
+    {
+        if (!$this->enabled || !$this->cruiseSystems->isActive()) {
+            return PLUGIN_HANDLED;
+        }
+
+        $this->cruiseSystems->showGarage($ucid);
+        return PLUGIN_HANDLED;
+    }
+
+    public function commandCruiseChase($cmd, $ucid, $packet = null)
+    {
+        if (!$this->enabled || !$this->cruiseSystems->isActive()) {
+            return PLUGIN_HANDLED;
+        }
+
+        $this->cruiseSystems->showPoliceMenu($ucid);
+        return PLUGIN_HANDLED;
     }
 
     public function onClientConnect(IS_NCN $NCN)
@@ -172,6 +236,18 @@ class serverModes extends Plugins
         $player =& $this->ensurePlayer($NPL->UCID);
         $player['positions'][$NPL->PLID] = null;
 
+        if ($this->cruiseSystems->isActive()) {
+            $player['state']['garage']['active_car'] = $NPL->CName;
+            if (!isset($player['state']['garage']['vehicles'][$NPL->CName])) {
+                $player['state']['garage']['vehicles'][$NPL->CName] = array(
+                    'plate' => '---:---',
+                    'distance' => 0.0,
+                    'insurance_until' => 0,
+                );
+            }
+            $player['state_dirty'] = true;
+        }
+
         return PLUGIN_CONTINUE;
     }
 
@@ -241,6 +317,80 @@ class serverModes extends Plugins
         }
 
         return PLUGIN_CONTINUE;
+    }
+
+    public function onButtonClick(IS_BTC $BTC)
+    {
+        ButtonManager::onButtonClick($BTC);
+        return PLUGIN_CONTINUE;
+    }
+
+    public function onButtonText(IS_BTT $BTT)
+    {
+        ButtonManager::onButtonText($BTT);
+        return PLUGIN_CONTINUE;
+    }
+
+    public function onButtonClear(IS_BFN $BFN)
+    {
+        if ($BFN->SubT == BFN_CLEAR) {
+            ButtonManager::clearButtonsForConn($BFN->UCID);
+        }
+
+        return PLUGIN_CONTINUE;
+    }
+
+    public function onUserControlObject(IS_UCO $UCO)
+    {
+        if ($this->enabled && $this->cruiseSystems->isActive()) {
+            $this->cruiseSystems->handleUserControlObject($UCO);
+        }
+
+        return PLUGIN_CONTINUE;
+    }
+
+    public function handleCruiseButton(...$args): void
+    {
+        if (!$this->enabled || !$this->cruiseSystems->isActive()) {
+            return;
+        }
+
+        if (count($args) < 2) {
+            return;
+        }
+
+        $ucid = (int)$args[0];
+        $type = (string)$args[1];
+        $action = $args[2] ?? null;
+        $extra = $args[3] ?? null;
+
+        switch ($type) {
+            case 'bank':
+                $this->cruiseSystems->handleBankAction($ucid, (string)$action);
+                break;
+            case 'teleport':
+                $this->cruiseSystems->handleTeleport($ucid, (string)$action);
+                break;
+            case 'regitra':
+                $this->cruiseSystems->handleRegitraAction($ucid, (string)$action);
+                break;
+            case 'police':
+                if ($action === 'close') {
+                    ButtonManager::removeButtonsByGroup($ucid, ServerModes_CruiseSystems::POLICE_GROUP);
+                } elseif ($action === 'back') {
+                    $this->cruiseSystems->showPoliceMenu($ucid);
+                }
+                break;
+            case 'police_inspect':
+                $this->cruiseSystems->showPolicePanel($ucid, (int)$action);
+                break;
+            case 'police_fine':
+                $this->cruiseSystems->handlePoliceAction($ucid, 'police_fine', (int)$action, (float)$extra);
+                break;
+            case 'police_release':
+                $this->cruiseSystems->handlePoliceAction($ucid, 'police_release', (int)$action);
+                break;
+        }
     }
 
     public function handleTickTimer()
@@ -347,6 +497,10 @@ class serverModes extends Plugins
         if ($this->activeMode) {
             $this->activeMode->processMovement($player, $distanceKm, $speedKph, $info);
         }
+
+        if (isset($player['state'])) {
+            $player['state']['telemetry']['heading'] = ($info->Heading * 360.0) / 65536.0;
+        }
     }
 
     private function flushPlayer(int $ucid, bool $force): void
@@ -418,6 +572,11 @@ class serverModes extends Plugins
             'lap_count' => 0,
         );
 
+        if (($force || !empty($player['state_dirty'])) && !empty($player['state'])) {
+            $this->database->savePlayerState($player['user_id'], $player['state']);
+            $player['state_dirty'] = false;
+        }
+
         $player['dirty'] = false;
         $player['last_saved'] = $now;
     }
@@ -449,11 +608,28 @@ class serverModes extends Plugins
                     'lap_count' => 0,
                 ),
                 'positions' => array(),
+                'state' => array(),
+                'state_dirty' => false,
                 'dirty' => false,
             );
         }
 
         return $this->players[$ucid];
+    }
+
+    public function &getPlayerRecord(int $ucid): array
+    {
+        return $this->ensurePlayer($ucid);
+    }
+
+    public function &getPlayerMap(): array
+    {
+        return $this->players;
+    }
+
+    public function getUcidByPlid(int $plid): ?int
+    {
+        return $this->plidMap[$plid] ?? null;
     }
 
     private function bootstrapPlayerFromDatabase(int $ucid): void
@@ -474,6 +650,12 @@ class serverModes extends Plugins
         $player['lifetime']['xp'] = (float)$record['total_xp'];
         $player['lifetime']['lap_count'] = (int)$record['lap_count'];
         $player['mode_key'] = $record['last_mode'] ?: ($this->activeMode ? $this->activeMode->getKey() : '');
+
+        $state = $this->database->loadPlayerState($userId);
+        if (is_array($state) && !empty($state)) {
+            $player['state'] = array_replace_recursive($player['state'], $state);
+            $player['state_dirty'] = false;
+        }
     }
 
     private function activateModeForHost(?string $hostId): void

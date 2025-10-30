@@ -96,6 +96,37 @@ class ServerModes_Database
         ));
     }
 
+    public function loadPlayerState(int $userId): array
+    {
+        if (!$this->ensureConnection()) {
+            return array();
+        }
+
+        $stmt = $this->pdo->prepare('SELECT state_json FROM prism_player_state WHERE user_id = :id');
+        $stmt->execute(array(':id' => $userId));
+        $row = $stmt->fetch();
+
+        if (!$row || !isset($row['state_json'])) {
+            return array();
+        }
+
+        $decoded = json_decode($row['state_json'], true);
+        return is_array($decoded) ? $decoded : array();
+    }
+
+    public function savePlayerState(int $userId, array $state): void
+    {
+        if (!$this->ensureConnection()) {
+            return;
+        }
+
+        $json = json_encode($state, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $stmt = $this->pdo->prepare('INSERT INTO prism_player_state (user_id, state_json, updated_at)
+                VALUES (:id, :json, NOW())
+                ON DUPLICATE KEY UPDATE state_json = VALUES(state_json), updated_at = VALUES(updated_at)');
+        $stmt->execute(array(':id' => $userId, ':json' => $json));
+    }
+
     public function recordSnapshot(array $payload): void
     {
         if (!$this->ensureConnection()) {
@@ -144,6 +175,14 @@ class ServerModes_Database
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             INDEX idx_user_id (user_id),
             CONSTRAINT fk_snapshots_player FOREIGN KEY (user_id) REFERENCES prism_players(user_id)
+                ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+            $this->pdo->exec('CREATE TABLE IF NOT EXISTS prism_player_state (
+            user_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+            state_json LONGTEXT NOT NULL,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            CONSTRAINT fk_state_player FOREIGN KEY (user_id) REFERENCES prism_players(user_id)
                 ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
         } catch (PDOException $e) {
