@@ -14,14 +14,37 @@
 // NOTE : This text file was written with a TAB size equal to 4 spaces.
 
 
-// INSIM VERSION NUMBER (updated for version 0.6M)
+// INSIM VERSION NUMBER (updated for version 0.7F)
 // ====================
 
-const int INSIM_VERSION = 7;
+const int INSIM_VERSION = 9;
 
 
 // CHANGES
 // =======
+
+// 0.7F5
+// -----
+// IS_AIC / IS_AII / SMALL_AII - set AI controls and get AI info
+
+// 0.7F
+// ----
+// IS_IPB / TINY_IPB - set / get list of IP bans
+
+// 0.7E
+// ----
+// License byte added to IS_NCI packet (after Language byte)
+// IS_PLH packet sets handicaps for individual players
+// TINY_PLH - request IS_PLH listing player handicaps
+// SMALL_LCL - full control of lights including fog and extra lights
+
+// 0.7A (INSIM_VERSION increased to 9)
+// ----
+// New size byte for packets - now represents packet size / 4
+// - this allows much larger packets, up to 1020 bytes
+// IS_AXM maximum objects increased to 60 (was 30) - see AXM_MAX_OBJECTS
+// IS_MCI maximum cars increased to 16 (was 8) - see MCI_MAX_CARS
+// IS_MAL / TINY_MAL - set / get list of mods allowed on host
 
 // Version 0.6M (INSIM_VERSION increased to 7)
 // ------------
@@ -296,6 +319,9 @@ enum // the fourth byte of an IS_TINY packet is one of these
     TINY_ALC,       // 24 - info request    : send a SMALL_ALC (allowed cars)
     TINY_AXM,       // 25 - info request    : send IS_AXM packets for the entire layout
     TINY_SLC,       // 26 - info request    : send IS_SLC packets for all connections
+    TINY_MAL,       // 27 - info request    : send IS_MAL listing the allowed mods
+    TINY_PLH,       // 28 - info request    : send IS_PLH listing player handicaps
+    TINY_IPB,       // 29 - info request    : send IS_IPB listing the IP bans
 };
 
 enum // the fourth byte of an IS_SMALL packet is one of these
@@ -865,6 +891,35 @@ struct IS_HCP // HandiCaPs
     CarHCP  Info[32];   // H_Mass and H_TRes for each car : XF GTI = 0 / XR GT = 1 etc
 };
 
+// Alternatively you can set handicaps per player.  These handicaps will remain until
+// the player spectates or rejoins after returning from pits or garage (an IS_NPL will
+// be sent in that case).
+
+// An output IS_PLH is sent to all InSim clients after an IS_PLH is received.  The output IS_PLH
+// contains an entry for all valid players that had handicaps updated.  An IS_PLH is also output
+// when a handicap is set by a text command /h_mass username X or /h_tres username X
+// NOTE: The 'silent' flag in bit 7 (0x80) avoids showing a message on player's screen.
+
+struct PlayerHCap // Player handicaps in 4 bytes - there is an array of these in the PLH (below)
+{
+    byte    PLID;       // player's unique id
+    byte    Flags;      // bit 0: set Mass / bit 1: set TRes (e.g. Flags=3 to set both) / bit 7: silent
+    byte    H_Mass;     // 0 to 200 - added mass (kg)
+    byte    H_TRes;     // 0 to  50 - intake restriction
+};
+
+const int PLH_MAX_PLAYERS = 40; // NOTE: Increase if MAX_CARS_S2 is increased
+
+struct IS_PLH // PLayer Handicaps - variable size
+{
+    byte    Size;       // 4 + NumP * 4
+    byte    Type;       // ISP_PLH
+    byte    ReqI;       // 0 unless this is a reply to a TINY_PLH request
+    byte    NumP;       // number of players in this packet
+
+    PlayerHCap  HCaps   [PLH_MAX_PLAYERS]; // 0 to PLH_MAX_PLAYERS (NumP)
+};
+
 
 // RACE TRACKING
 // =============
@@ -961,7 +1016,7 @@ struct IS_NCI // New Conn Info - sent on host only if an admin password has been
     byte    UCID;       // connection's unique id (0 = host)
 
     byte    Language;   // see below : Languages
-    byte    Sp1;
+    byte    License;    // 0:demo / 1:S1 ...
     byte    Sp2;
     byte    Sp3;
 
@@ -980,6 +1035,49 @@ struct IS_SLC // SeLected Car - sent when a connection selects a car (empty if n
 };
 
 // NOTE : If a new guest joins and does have a car selected then an IS_SLC will be sent
+
+// Allowed Mods
+
+// You can set up to 120 mods that are allowed to be used on a host
+// Send zero to clear the list and allow all mods to be used
+
+const int MAL_MAX_MODS = 120;
+
+struct IS_MAL // Mods ALlowed - variable size
+{
+    byte    Size;       // 8 + NumM * 4
+    byte    Type;       // ISP_MAL
+    byte    ReqI;       // 0 unless this is a reply to a TINY_MAL request
+    byte    NumM;       // number of mods in this packet
+
+    byte    UCID;       // unique id of the connection that updated the list
+    byte    Flags;      // zero (for now)
+    byte    Sp2;
+    byte    Sp3;
+
+    unsigned    SkinID  [MAL_MAX_MODS]; // SkinID of each mod in compressed format, 0 to MAL_MAX_MODS (NumM)
+};
+
+// IP Bans
+
+// You can set up to 120 IP addresses that are not allowed to join a host
+
+const int IPB_MAX_BANS = 120;
+
+struct IS_IPB // IP Bans - variable size
+{
+    byte    Size;       // 8 + NumB * 4
+    byte    Type;       // ISP_IPB
+    byte    ReqI;       // 0 unless this is a reply to a TINY_IPB request
+    byte    NumB;       // number of bans in this packet
+
+    byte    Sp0;
+    byte    Sp1;
+    byte    Sp2;
+    byte    Sp3;
+
+    in_addr     BanIPs  [IPB_MAX_BANS]; // IP addresses, 0 to IPB_MAX_BANS (NumB)
+};
 
 struct IS_CNL // ConN Leave
 {
