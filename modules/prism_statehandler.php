@@ -73,18 +73,21 @@ class StateHandler extends PropertyMaster
 
         if ($Packet instanceof IS_NCN) {
             $this->clients[$Packet->UCID] = new ClientHandler($Packet, $this);
-        } else {
-            # Check to make sure we have a client.
-            if (!isset($this->clients[$Packet->UCID])) {
-                return;
-            }
-            
-            if ($Packet instanceof ISP_CNL) {
-                ButtonManager::clearButtonsForConn($Packet->UCID);
-            }
-
-            $this->clients[$Packet->UCID]->{ClientHandler::$handles[$Packet->Type]}($Packet);
+            return;
         }
+
+        # Check to make sure we have a client.
+        if (!isset($this->clients[$Packet->UCID])) {
+            return;
+        }
+
+        if ($Packet instanceof ISP_CNL) {
+            ButtonManager::clearButtonsForConn($Packet->UCID);
+            $this->removeClientById($Packet->UCID);
+            return;
+        }
+
+        $this->clients[$Packet->UCID]->{ClientHandler::$handles[$Packet->Type]}($Packet);
     }
 
     // Player handles
@@ -135,8 +138,39 @@ class StateHandler extends PropertyMaster
 
 
     // Extrinsic Properties
+    protected $PLID;
+
     public $clients = array();
     public $players = array();        # By design there is one here and a refrence to this in the $this->clients[UCID]->players[PLID] array.
+
+    private function removeClientById($ucid)
+    {
+        if (!isset($this->clients[$ucid])) {
+            return;
+        }
+
+        $client = $this->clients[$ucid];
+
+        if (!empty($client->players)) {
+            foreach (array_keys($client->players) as $plid) {
+                if (isset($this->players[$plid]) && $this->players[$plid] instanceof PlayerHandler) {
+                    $this->players[$plid]->detach();
+                } elseif (isset($client->players[$plid])) {
+                    unset($client->players[$plid]);
+                }
+            }
+        }
+
+        if ($client instanceof ClientHandler) {
+            $client->detach();
+        }
+
+        unset($this->clients[$ucid]);
+
+        if (function_exists('gc_collect_cycles')) {
+            gc_collect_cycles();
+        }
+    }
 
     // Constructor
     public function __construct()
@@ -144,6 +178,9 @@ class StateHandler extends PropertyMaster
         global $PRISM;
         # Send out some info requests
         $ISP = IS_TINY()->ReqI(1);
+        $currentHost = $PRISM->hosts->getHostById();
+        $isRelayHost = (is_object($currentHost) && method_exists($currentHost, 'isRelay')) ? $currentHost->isRelay() : false;
+        $isLocalHost = (is_object($currentHost) && method_exists($currentHost, 'getFlags')) ? (($currentHost->getFlags() & ISF_LOCAL) !== 0) : false;
         // Request every bit of information we can get.
         // This becomes our baseline that we use and update as needed.
         # Get the most about of information as fast as we can.
@@ -151,7 +188,7 @@ class StateHandler extends PropertyMaster
         # Get information on the clients & players, and their current race state.
         $ISP->SubT(TINY_SST)->Send();    # Send STate info (ISP_STA)
         $ISP->SubT(TINY_NCN)->Send();    # get all connections (ISP_NCN)
-        if(($PRISM->hosts->getHostById()->getFlags() & ISF_LOCAL) == 0) {
+        if(!$isLocalHost) {
             #TINY_NCI is only supported in MultiPlayer
             console('Not local; requesting TINY_NCI');
             $ISP->SubT(TINY_NCI)->Send();    # get NCI for all guests (ISP_NCN)
@@ -165,10 +202,14 @@ class StateHandler extends PropertyMaster
         $ISP->SubT(TINY_RST)->Send();    # send an IS_RST (ISP_RST)
         $ISP->SubT(TINY_AXI)->Send();    # send an IS_AXI - AutoX Info (ISP_AXI)
 
-        if (!$PRISM->hosts->getHostById()->isRelay()) {
+        if (!$isRelayHost) {
             $ISP->SubT(TINY_NLP)->Send();    # send an IS_NLP (ISP_NLP)
             $ISP->SubT(TINY_MCI)->Send();    # send an IS_MCI (ISP_MCI)
-            $ISP->SubT(TINY_RIP)->Send();    # send an IS_RIP - Replay Information Packet (ISP_RIP)
+            if (!$isLocalHost) {
+                $ISP->SubT(TINY_RIP)->Send();    # send an IS_RIP - Replay Information Packet (ISP_RIP)
+            } else if ($PRISM->config->cvars['debugMode'] & PRISM_DEBUG_CORE) {
+                console('Skipping TINY_RIP request on local host.');
+            }
         }
     }
 
@@ -384,6 +425,8 @@ class ClientHandler extends PropertyMaster
         ISP_NCI => 'onClientInfo'    # 57
     );
     public $players = array();
+    private $parent;
+    private $PRISM = false;
 
     public function dispatchPacket(Struct $Packet)
     {
@@ -430,6 +473,16 @@ class ClientHandler extends PropertyMaster
 
     public function __destruct()
     {
+        $this->cleanup();
+    }
+
+    public function detach()
+    {
+        $this->cleanup();
+    }
+
+    private function cleanup()
+    {
         foreach ($this as $key => $value)
         {
             unset($this->$key);
@@ -471,7 +524,7 @@ class PlayerHandler extends PropertyMaster
 {
     public static $handles = array(
         ISP_NPL => '__construct',    # 21
-        ISP_PLL => '__destruct',    # 23
+        ISP_PLL => 'onLeave',    # 23
         ISP_PLP => 'onPits',        # 22
         ISP_FIN => 'onFinished',    # 34
         ISP_RES => 'onResult',        # 35
@@ -498,6 +551,9 @@ class PlayerHandler extends PropertyMaster
     public $inPits;            # For when a player is in our list, but not on track this is TRUE.
 
     // Constructor
+    private $parent;
+    private $PLID;
+
     public function __construct(IS_NPL $NPL, StateHandler $parent)
     {
         $this->parent = $parent;
@@ -507,14 +563,19 @@ class PlayerHandler extends PropertyMaster
 
     public function __destruct()
     {
-        foreach ($this as $key => $value)
-        {
+        $this->cleanup();
+    }
+
+    private function cleanup()
+    {
+        foreach ($this as $key => $value) {
             unset($this->$key);
         }
     }
 
     private function onNPL(IS_NPL $NPL)
     {
+        $this->PLID = $NPL->PLID;
         $this->UCID = $NPL->UCID;
         $this->PType = $NPL->PType;
         $this->Flags = $NPL->Flags;
@@ -537,6 +598,23 @@ class PlayerHandler extends PropertyMaster
         $this->inPits = TRUE;
     }
 
+    public function onLeave(IS_PLL $PLL)
+    {
+        $this->detachFromParent($PLL->PLID);
+        $this->cleanup();
+    }
+
+    public function detach()
+    {
+        $plid = $this->PLID ?? null;
+
+        if ($plid !== null) {
+            $this->detachFromParent($plid);
+        }
+
+        $this->cleanup();
+    }
+
     # Special case, handled within the parent class's onPlayerPacket method.
     public function onLeavingPits(IS_NPL $NPL)
     {
@@ -548,6 +626,27 @@ class PlayerHandler extends PropertyMaster
         $this->UCID = $TOC->NewUCID;
         $this->UName = $this->parent->clients[$TOC->NewUCID]->UName;
         $this->PName = $this->parent->clients[$TOC->NewUCID]->PName;
+    }
+
+    private function detachFromParent($plid)
+    {
+        $parent = $this->parent ?? null;
+        $ucid = $this->UCID ?? null;
+
+        if ($parent === null || $plid === null) {
+            return;
+        }
+
+        if ($ucid !== null
+            && isset($parent->clients[$ucid])
+            && isset($parent->clients[$ucid]->players[$plid])
+            && $parent->clients[$ucid]->players[$plid] === $this) {
+            unset($parent->clients[$ucid]->players[$plid]);
+        }
+
+        if (isset($parent->players[$plid]) && $parent->players[$plid] === $this) {
+            unset($parent->players[$plid]);
+        }
     }
 
     protected $finished = FALSE;
