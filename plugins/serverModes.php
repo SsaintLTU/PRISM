@@ -4,6 +4,7 @@ require_once __DIR__ . '/serverModes/modules/ModeBase.php';
 require_once __DIR__ . '/serverModes/modules/ModeCruise.php';
 require_once __DIR__ . '/serverModes/modules/ModeDrift.php';
 require_once __DIR__ . '/serverModes/modules/ModeRace.php';
+require_once __DIR__ . '/serverModes/modules/RaceSystems.php';
 require_once __DIR__ . '/serverModes/modules/TrafficLightController.php';
 require_once __DIR__ . '/serverModes/modules/CruiseSystems.php';
 require_once __DIR__ . '/serverModes/modules/DriftSystems.php';
@@ -37,6 +38,7 @@ class serverModes extends Plugins
     private ?ServerModes_TrafficLightController $trafficLights = null;
     private ServerModes_CruiseSystems $cruiseSystems;
     private ServerModes_DriftSystems $driftSystems;
+    private ServerModes_RaceSystems $raceSystems;
     private ServerModes_Friends $friendManager;
 
     public function __construct()
@@ -58,12 +60,13 @@ class serverModes extends Plugins
 
         $this->cruiseSystems = new ServerModes_CruiseSystems($this, $this->config['mode_cruise'] ?? array());
         $this->driftSystems = new ServerModes_DriftSystems($this, $this->config['mode_drift'] ?? array());
+        $this->raceSystems = new ServerModes_RaceSystems($this, $this->config['mode_race'] ?? array());
         $this->friendManager = new ServerModes_Friends($this, $this->config['social'] ?? array());
 
         $this->modes = array(
             'cruise' => new ServerModes_ModeCruise($this, $this->cruiseSystems, $this->config['mode_cruise'] ?? array()),
             'drift'  => new ServerModes_ModeDrift($this, $this->driftSystems, $this->config['mode_drift'] ?? array()),
-            'race'   => new ServerModes_ModeRace($this, $this->config['mode_race'] ?? array()),
+            'race'   => new ServerModes_ModeRace($this, $this->raceSystems, $this->config['mode_race'] ?? array()),
         );
 
         $this->hostModeMap = $this->config['hosts'] ?? array();
@@ -81,6 +84,7 @@ class serverModes extends Plugins
         $this->registerPacket('onPlayerLeaveRace', ISP_PLL);
         $this->registerPacket('onCarInfo', ISP_MCI);
         $this->registerPacket('onLapCompleted', ISP_LAP);
+        $this->registerPacket('onRaceResult', ISP_RES);
         $this->registerPacket('onButtonClick', ISP_BTC);
         $this->registerPacket('onButtonText', ISP_BTT);
         $this->registerPacket('onButtonClear', ISP_BFN);
@@ -93,6 +97,8 @@ class serverModes extends Plugins
         $this->registerSayCommand('chase', 'commandCruiseChase', 'Open the police menu.');
         $this->registerSayCommand('add', 'commandAddFriend', 'Add a player to your friends list.');
         $this->registerSayCommand('friends', 'commandFriends', 'Manage your friends list display.');
+        $this->registerSayCommand('pmto', 'commandPmTo', 'Select a player for private messaging.');
+        $this->registerSayCommand('pm', 'commandPm', 'Send a private message to the selected player.');
 
         $this->createNamedTimer('serverModes.tick', 'handleTickTimer', 1.0, Timer::REPEAT);
         $this->createNamedTimer('serverModes.autosave', 'handleAutosaveTimer', $this->autosaveInterval, Timer::REPEAT);
@@ -200,6 +206,65 @@ class serverModes extends Plugins
 
         $argument = trim(substr($cmd, strlen('friends')));
         $this->friendManager->handleFriendsCommand($ucid, $argument);
+
+        return PLUGIN_HANDLED;
+    }
+
+    public function commandPmTo($cmd, $ucid, $packet = null)
+    {
+        if (!$this->enabled) {
+            return PLUGIN_HANDLED;
+        }
+
+        $argument = trim(substr($cmd, strlen('pmto')));
+        if ($argument === '') {
+            $this->MsgToUCID($ucid, '^1Usage:^7 !pmto <player name>');
+            return PLUGIN_HANDLED;
+        }
+
+        $match = $this->findPlayerAcrossHosts($argument);
+        if ($match === null) {
+            $this->MsgToUCID($ucid, '^1Player not found on any connected host.');
+            return PLUGIN_HANDLED;
+        }
+
+        $this->setPmTarget($ucid, $match);
+        $hostLabel = $match['host_name'] !== '' ? $match['host_name'] : ('Host ' . $match['host_id']);
+        $this->MsgToUCID($ucid, sprintf('^5[PM]^7 Target set to ^3%s ^8(^7%s^8).', $match['display'], $hostLabel));
+
+        return PLUGIN_HANDLED;
+    }
+
+    public function commandPm($cmd, $ucid, $packet = null)
+    {
+        if (!$this->enabled) {
+            return PLUGIN_HANDLED;
+        }
+
+        $message = trim(substr($cmd, strlen('pm')));
+        if ($message === '') {
+            $this->MsgToUCID($ucid, '^1Usage:^7 !pm <message>');
+            return PLUGIN_HANDLED;
+        }
+
+        $target = $this->getPmTarget($ucid);
+        if ($target === null) {
+            $this->MsgToUCID($ucid, '^1Use ^7!pmto <name> ^1to select a player first.');
+            return PLUGIN_HANDLED;
+        }
+
+        $resolved = $this->resolvePmTarget($target);
+        if ($resolved === null) {
+            $this->MsgToUCID($ucid, '^1That player is no longer online.');
+            $this->setPmTarget($ucid, null);
+            return PLUGIN_HANDLED;
+        }
+
+        $senderName = $this->players[$ucid]['nickname'] ?? $this->players[$ucid]['username'] ?? 'Player';
+        $outbound = sprintf('^5[PM]^7 %s: ^3%s', $senderName, $message);
+        Msg2Lfs()->UCID($resolved['ucid'])->Text($outbound)->send($resolved['host_id']);
+
+        $this->MsgToUCID($ucid, '^5[PM]^7 to ^3' . $resolved['display'] . '^7: ^3' . $message);
 
         return PLUGIN_HANDLED;
     }
@@ -381,6 +446,29 @@ class serverModes extends Plugins
         return PLUGIN_CONTINUE;
     }
 
+    public function onRaceResult(IS_RES $RES)
+    {
+        if (!$this->enabled) {
+            return PLUGIN_CONTINUE;
+        }
+
+        $plid = $RES->PLID;
+        $ucid = $plid ? ($this->plidMap[$plid] ?? null) : null;
+        $player = null;
+        if ($ucid !== null && isset($this->players[$ucid])) {
+            $player =& $this->players[$ucid];
+        }
+
+        if ($this->activeMode && $player !== null) {
+            $this->activeMode->onRaceResult($player, $RES);
+        } elseif ($this->activeMode && $player === null) {
+            $dummy = array('ucid' => $ucid);
+            $this->activeMode->onRaceResult($dummy, $RES);
+        }
+
+        return PLUGIN_CONTINUE;
+    }
+
     public function onButtonClick(IS_BTC $BTC)
     {
         ButtonManager::onButtonClick($BTC);
@@ -464,6 +552,15 @@ class serverModes extends Plugins
         $this->driftSystems->handleButton((int)$ucid, (string)$action, $extra);
     }
 
+    public function handleRaceButton($ucid, $action, $extra = null): void
+    {
+        if (!$this->enabled) {
+            return;
+        }
+
+        $this->raceSystems->handleButton((int)$ucid, (string)$action, $extra);
+    }
+
     public function handleFriendsButton($ucid, $action, $extra = null): void
     {
         if (!$this->enabled) {
@@ -503,6 +600,105 @@ class serverModes extends Plugins
         }
 
         return PLUGIN_CONTINUE;
+    }
+
+    private function findPlayerAcrossHosts(string $query): ?array
+    {
+        global $PRISM;
+
+        $normalized = strtolower($query);
+        foreach ($PRISM->hosts->getHostsInfo() as $host) {
+            if (($host['connStatus'] ?? 0) < CONN_VERIFIED) {
+                continue;
+            }
+
+            $state = $this->getHostState($host['id']);
+            if (!$state || empty($state->clients)) {
+                continue;
+            }
+
+            foreach ($state->clients as $client) {
+                $ucid = $client->UCID ?? null;
+                if ($ucid === null) {
+                    continue;
+                }
+
+                $username = $client->UName ?? '';
+                $nickname = $client->PName ?? '';
+                if ($normalized === strtolower($username) || ($nickname !== '' && $normalized === strtolower($nickname))) {
+                    return array(
+                        'host_id' => $host['id'],
+                        'host_name' => $host['hostname'] ?? '',
+                        'ucid' => $ucid,
+                        'username' => $username,
+                        'nickname' => $nickname,
+                        'display' => $nickname !== '' ? $nickname : $username,
+                    );
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private function resolvePmTarget(array $target): ?array
+    {
+        $hostId = $target['host_id'] ?? null;
+        $ucid = $target['ucid'] ?? null;
+        if ($hostId === null || $ucid === null) {
+            return null;
+        }
+
+        $state = $this->getHostState($hostId);
+        if (!$state || empty($state->clients)) {
+            return null;
+        }
+
+        foreach ($state->clients as $client) {
+            if (($client->UCID ?? null) === $ucid) {
+                $username = $client->UName ?? '';
+                $nickname = $client->PName ?? '';
+                return array(
+                    'host_id' => $hostId,
+                    'host_name' => $target['host_name'] ?? '',
+                    'ucid' => $ucid,
+                    'username' => $username,
+                    'nickname' => $nickname,
+                    'display' => $nickname !== '' ? $nickname : $username,
+                );
+            }
+        }
+
+        return null;
+    }
+
+    private function setPmTarget(int $ucid, ?array $target): void
+    {
+        $player =& $this->ensurePlayer($ucid);
+        if (!isset($player['social']) || !is_array($player['social'])) {
+            $player['social'] = array();
+        }
+
+        if ($target === null) {
+            $player['social']['pm_target'] = null;
+        } else {
+            $player['social']['pm_target'] = array(
+                'host_id' => $target['host_id'],
+                'host_name' => $target['host_name'] ?? '',
+                'ucid' => $target['ucid'],
+                'display' => $target['display'],
+            );
+        }
+    }
+
+    private function getPmTarget(int $ucid): ?array
+    {
+        if (!isset($this->players[$ucid])) {
+            return null;
+        }
+
+        $target = $this->players[$ucid]['social']['pm_target'] ?? null;
+        return is_array($target) ? $target : null;
     }
 
     public function applyModeConfig(string $modeKey, array $config): void
@@ -698,6 +894,9 @@ class serverModes extends Plugins
                 'state' => array(),
                 'state_dirty' => false,
                 'dirty' => false,
+                'social' => array(
+                    'pm_target' => null,
+                ),
             );
         }
 

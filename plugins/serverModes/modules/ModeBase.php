@@ -38,11 +38,19 @@ abstract class ServerModes_Mode
     {
     }
 
+    public function onPlayerJoinRace(array &$player, IS_NPL $packet): void
+    {
+    }
+
     public function processMovement(array &$player, float $deltaKm, float $speedKph, CompCar $info): void
     {
     }
 
     public function onLapCompleted(array &$player, IS_LAP $lap): void
+    {
+    }
+
+    public function onRaceResult(array &$player, IS_RES $result): void
     {
     }
 

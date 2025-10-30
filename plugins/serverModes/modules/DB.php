@@ -208,6 +208,29 @@ class ServerModes_Database
         ));
     }
 
+    public function recordRaceResult(array $payload): void
+    {
+        if (!$this->ensureConnection()) {
+            return;
+        }
+
+        $sql = 'INSERT INTO prism_race_results (user_id, username, nickname, track, car, class, position, points, race_time, created_at)
+                VALUES (:user_id, :username, :nickname, :track, :car, :class, :position, :points, :race_time, NOW())';
+
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute(array(
+            ':user_id' => $payload['user_id'],
+            ':username' => $payload['username'] ?? '',
+            ':nickname' => $payload['nickname'] ?? '',
+            ':track' => $payload['track'] ?? '',
+            ':car' => $payload['car'] ?? '',
+            ':class' => $payload['class'] ?? '',
+            ':position' => (int)($payload['position'] ?? 0),
+            ':points' => (int)($payload['points'] ?? 0),
+            ':race_time' => (float)($payload['time'] ?? 0.0),
+        ));
+    }
+
     public function fetchTopDriftScores(string $layout, string $period, int $limit = 5): array
     {
         if (!$this->ensureConnection()) {
@@ -327,6 +350,22 @@ class ServerModes_Database
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             INDEX idx_layout_created (layout, created_at),
             INDEX idx_user_layout (user_id, layout)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+            $this->pdo->exec('CREATE TABLE IF NOT EXISTS prism_race_results (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            user_id BIGINT UNSIGNED NOT NULL,
+            username VARCHAR(32) NOT NULL DEFAULT "",
+            nickname VARCHAR(32) NOT NULL DEFAULT "",
+            track VARCHAR(8) NOT NULL DEFAULT "",
+            car VARCHAR(8) NOT NULL DEFAULT "",
+            class VARCHAR(16) NOT NULL DEFAULT "",
+            position TINYINT UNSIGNED NOT NULL DEFAULT 0,
+            points INT UNSIGNED NOT NULL DEFAULT 0,
+            race_time DOUBLE NOT NULL DEFAULT 0,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_user_track (user_id, track),
+            INDEX idx_created (created_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
         } catch (PDOException $e) {
             console('serverModes: failed to ensure schema - ' . $e->getMessage());
