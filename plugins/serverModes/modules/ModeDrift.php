@@ -1,9 +1,41 @@
 <?php
 class ServerModes_ModeDrift extends ServerModes_Mode
 {
-    public function __construct(serverModes $plugin, array $config = array())
+    private ?ServerModes_DriftSystems $systems;
+
+    public function __construct(serverModes $plugin, ?ServerModes_DriftSystems $systems, array $config = array())
     {
         parent::__construct($plugin, 'drift', $config);
+        $this->systems = $systems;
+    }
+
+    public function onActivate(): void
+    {
+        if ($this->systems) {
+            $this->systems->applyConfig($this->config);
+            $this->systems->onActivate();
+        }
+    }
+
+    public function onDeactivate(): void
+    {
+        if ($this->systems) {
+            $this->systems->onDeactivate();
+        }
+    }
+
+    public function onPlayerConnected(array &$player): void
+    {
+        if ($this->systems) {
+            $this->systems->onPlayerConnected($player);
+        }
+    }
+
+    public function onPlayerDisconnected(array &$player): void
+    {
+        if ($this->systems) {
+            $this->systems->onPlayerDisconnected($player);
+        }
     }
 
     public function processMovement(array &$player, float $deltaKm, float $speedKph, CompCar $info): void
@@ -26,5 +58,16 @@ class ServerModes_ModeDrift extends ServerModes_Mode
         $player['session']['money'] += $deltaKm * $rate * $bonus;
         $player['session']['xp'] += $deltaKm * $xpRate * $bonus;
         $this->markDirty($player);
+
+        if ($this->systems) {
+            $this->systems->onDriftSample($player, $deltaKm, $speedKph, $slip, $info);
+        }
+    }
+
+    public function tick(array &$players): void
+    {
+        if ($this->systems) {
+            $this->systems->tick($players);
+        }
     }
 }

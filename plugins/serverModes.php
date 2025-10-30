@@ -6,6 +6,8 @@ require_once __DIR__ . '/serverModes/modules/ModeDrift.php';
 require_once __DIR__ . '/serverModes/modules/ModeRace.php';
 require_once __DIR__ . '/serverModes/modules/TrafficLightController.php';
 require_once __DIR__ . '/serverModes/modules/CruiseSystems.php';
+require_once __DIR__ . '/serverModes/modules/DriftSystems.php';
+require_once __DIR__ . '/serverModes/modules/Friends.php';
 
 class serverModes extends Plugins
 {
@@ -27,12 +29,15 @@ class serverModes extends Plugins
 
     private string $activeHost = '';
     private array $hostModeMap = array();
+    private string $currentTrack = '';
 
     private int $snapshotInterval = 60;
     private int $autosaveInterval = 15;
 
     private ?ServerModes_TrafficLightController $trafficLights = null;
     private ServerModes_CruiseSystems $cruiseSystems;
+    private ServerModes_DriftSystems $driftSystems;
+    private ServerModes_Friends $friendManager;
 
     public function __construct()
     {
@@ -52,10 +57,12 @@ class serverModes extends Plugins
         }
 
         $this->cruiseSystems = new ServerModes_CruiseSystems($this, $this->config['mode_cruise'] ?? array());
+        $this->driftSystems = new ServerModes_DriftSystems($this, $this->config['mode_drift'] ?? array());
+        $this->friendManager = new ServerModes_Friends($this, $this->config['social'] ?? array());
 
         $this->modes = array(
             'cruise' => new ServerModes_ModeCruise($this, $this->cruiseSystems, $this->config['mode_cruise'] ?? array()),
-            'drift'  => new ServerModes_ModeDrift($this, $this->config['mode_drift'] ?? array()),
+            'drift'  => new ServerModes_ModeDrift($this, $this->driftSystems, $this->config['mode_drift'] ?? array()),
             'race'   => new ServerModes_ModeRace($this, $this->config['mode_race'] ?? array()),
         );
 
@@ -69,6 +76,7 @@ class serverModes extends Plugins
         $this->registerPacket('onClientConnect', ISP_NCN);
         $this->registerPacket('onClientInfo', ISP_NCI);
         $this->registerPacket('onClientDisconnect', ISP_CNL);
+        $this->registerPacket('onStateInfo', ISP_STA);
         $this->registerPacket('onPlayerJoinRace', ISP_NPL);
         $this->registerPacket('onPlayerLeaveRace', ISP_PLL);
         $this->registerPacket('onCarInfo', ISP_MCI);
@@ -83,6 +91,8 @@ class serverModes extends Plugins
         $this->registerSayCommand('regitra', 'commandCruiseRegitra', 'Open vehicle registry.');
         $this->registerSayCommand('garage', 'commandCruiseGarage', 'Show owned vehicles.');
         $this->registerSayCommand('chase', 'commandCruiseChase', 'Open the police menu.');
+        $this->registerSayCommand('add', 'commandAddFriend', 'Add a player to your friends list.');
+        $this->registerSayCommand('friends', 'commandFriends', 'Manage your friends list display.');
 
         $this->createNamedTimer('serverModes.tick', 'handleTickTimer', 1.0, Timer::REPEAT);
         $this->createNamedTimer('serverModes.autosave', 'handleAutosaveTimer', $this->autosaveInterval, Timer::REPEAT);
@@ -166,6 +176,34 @@ class serverModes extends Plugins
         return PLUGIN_HANDLED;
     }
 
+    public function commandAddFriend($cmd, $ucid, $packet = null)
+    {
+        if (!$this->enabled) {
+            return PLUGIN_HANDLED;
+        }
+
+        $target = trim(substr($cmd, strlen('add')));
+        if ($target === '') {
+            $this->MsgToUCID($ucid, '^1Usage:^7 !add <player name>');
+            return PLUGIN_HANDLED;
+        }
+
+        $this->friendManager->handleAddCommand($ucid, $target);
+        return PLUGIN_HANDLED;
+    }
+
+    public function commandFriends($cmd, $ucid, $packet = null)
+    {
+        if (!$this->enabled) {
+            return PLUGIN_HANDLED;
+        }
+
+        $argument = trim(substr($cmd, strlen('friends')));
+        $this->friendManager->handleFriendsCommand($ucid, $argument);
+
+        return PLUGIN_HANDLED;
+    }
+
     public function onClientConnect(IS_NCN $NCN)
     {
         if (!$this->enabled || $NCN->UCID == 0) {
@@ -180,6 +218,8 @@ class serverModes extends Plugins
         $player['host'] = $this->activeHost;
         $player['mode_key'] = $this->activeMode ? $this->activeMode->getKey() : '';
         $player['dirty'] = true;
+
+        $this->friendManager->onPlayerConnected($player);
 
         if ($this->activeMode) {
             $this->activeMode->onPlayerConnected($player);
@@ -199,6 +239,22 @@ class serverModes extends Plugins
         $player['dirty'] = true;
 
         $this->bootstrapPlayerFromDatabase($NCI->UCID);
+        $this->friendManager->onClientInfo($player);
+
+        return PLUGIN_CONTINUE;
+    }
+
+    public function onStateInfo(IS_STA $STA)
+    {
+        if (!$this->enabled) {
+            return PLUGIN_CONTINUE;
+        }
+
+        $track = trim($STA->Track);
+        if ($track !== $this->currentTrack) {
+            $this->currentTrack = $track;
+            $this->driftSystems->onTrackChanged($track);
+        }
 
         return PLUGIN_CONTINUE;
     }
@@ -209,9 +265,13 @@ class serverModes extends Plugins
             return PLUGIN_CONTINUE;
         }
 
-        if (isset($this->players[$CNL->UCID]) && $this->activeMode) {
+        if (isset($this->players[$CNL->UCID])) {
             $player =& $this->players[$CNL->UCID];
-            $this->activeMode->onPlayerDisconnected($player);
+            $this->friendManager->onPlayerDisconnected($player);
+
+            if ($this->activeMode) {
+                $this->activeMode->onPlayerDisconnected($player);
+            }
         }
 
         $this->flushPlayer($CNL->UCID, true);
@@ -247,6 +307,8 @@ class serverModes extends Plugins
             }
             $player['state_dirty'] = true;
         }
+
+        $this->driftSystems->onPlayerJoinRace($player, $NPL);
 
         return PLUGIN_CONTINUE;
     }
@@ -393,6 +455,24 @@ class serverModes extends Plugins
         }
     }
 
+    public function handleDriftButton($ucid, $action, $extra = null): void
+    {
+        if (!$this->enabled) {
+            return;
+        }
+
+        $this->driftSystems->handleButton((int)$ucid, (string)$action, $extra);
+    }
+
+    public function handleFriendsButton($ucid, $action, $extra = null): void
+    {
+        if (!$this->enabled) {
+            return;
+        }
+
+        $this->friendManager->handleButton((int)$ucid, (string)$action, $extra);
+    }
+
     public function handleTickTimer()
     {
         if (!$this->enabled) {
@@ -406,6 +486,8 @@ class serverModes extends Plugins
         if ($this->activeMode) {
             $this->activeMode->tick($this->players);
         }
+
+        $this->friendManager->tick();
 
         return PLUGIN_CONTINUE;
     }
@@ -458,6 +540,11 @@ class serverModes extends Plugins
     public function getActiveHostId(): string
     {
         return $this->activeHost;
+    }
+
+    public function getCurrentTrack(): string
+    {
+        return $this->currentTrack;
     }
 
     private function processMovement(array &$player, int $plid, CompCar $info): void

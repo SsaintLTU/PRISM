@@ -147,6 +147,126 @@ class ServerModes_Database
         ));
     }
 
+    public function loadFriends(int $userId): array
+    {
+        if (!$this->ensureConnection()) {
+            return array();
+        }
+
+        $stmt = $this->pdo->prepare('SELECT friend_id, friend_name, created_at FROM prism_player_friends WHERE owner_id = :id ORDER BY friend_name');
+        $stmt->execute(array(':id' => $userId));
+
+        return $stmt->fetchAll() ?: array();
+    }
+
+    public function addFriend(int $ownerId, int $friendId, string $friendName): bool
+    {
+        if (!$this->ensureConnection()) {
+            return false;
+        }
+
+        $sql = 'INSERT INTO prism_player_friends (owner_id, friend_id, friend_name, created_at)
+                VALUES (:owner, :friend, :name, NOW())
+                ON DUPLICATE KEY UPDATE friend_name = VALUES(friend_name)';
+
+        $stmt = $this->pdo->prepare($sql);
+        return $stmt->execute(array(
+            ':owner' => $ownerId,
+            ':friend' => $friendId,
+            ':name' => $friendName,
+        ));
+    }
+
+    public function removeFriend(int $ownerId, int $friendId): void
+    {
+        if (!$this->ensureConnection()) {
+            return;
+        }
+
+        $stmt = $this->pdo->prepare('DELETE FROM prism_player_friends WHERE owner_id = :owner AND friend_id = :friend');
+        $stmt->execute(array(':owner' => $ownerId, ':friend' => $friendId));
+    }
+
+    public function recordDriftScore(array $payload): void
+    {
+        if (!$this->ensureConnection()) {
+            return;
+        }
+
+        $sql = 'INSERT INTO prism_drift_scores (user_id, username, nickname, layout, host_id, points, max_angle, created_at)
+                VALUES (:user_id, :username, :nickname, :layout, :host_id, :points, :max_angle, NOW())';
+
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute(array(
+            ':user_id' => $payload['user_id'],
+            ':username' => $payload['username'] ?? '',
+            ':nickname' => $payload['nickname'] ?? '',
+            ':layout' => $payload['layout'] ?? '',
+            ':host_id' => $payload['host_id'] ?? '',
+            ':points' => $payload['points'] ?? 0.0,
+            ':max_angle' => $payload['max_angle'] ?? 0.0,
+        ));
+    }
+
+    public function fetchTopDriftScores(string $layout, string $period, int $limit = 5): array
+    {
+        if (!$this->ensureConnection()) {
+            return array();
+        }
+
+        $period = strtolower($period);
+        switch ($period) {
+            case 'day':
+                $interval = '1 DAY';
+                break;
+            case 'week':
+                $interval = '7 DAY';
+                break;
+            case 'month':
+                $interval = '1 MONTH';
+                break;
+            case 'year':
+                $interval = '1 YEAR';
+                break;
+            default:
+                $interval = '1 DAY';
+                break;
+        }
+
+        $sql = 'SELECT user_id, username, nickname, layout, points, max_angle, created_at
+                FROM prism_drift_scores
+                WHERE created_at >= DATE_SUB(NOW(), INTERVAL ' . $interval . ')';
+
+        $params = array();
+        if ($layout !== '' && $layout !== '*') {
+            $sql .= ' AND layout = :layout';
+            $params[':layout'] = $layout;
+        }
+
+        $sql .= ' ORDER BY points DESC, created_at ASC LIMIT :limit';
+
+        $stmt = $this->pdo->prepare($sql);
+        foreach ($params as $key => $value) {
+            $stmt->bindValue($key, $value);
+        }
+        $stmt->bindValue(':limit', max(1, $limit), PDO::PARAM_INT);
+        $stmt->execute();
+
+        return $stmt->fetchAll() ?: array();
+    }
+
+    public function fetchKnownDriftLayouts(): array
+    {
+        if (!$this->ensureConnection()) {
+            return array();
+        }
+
+        $stmt = $this->pdo->query('SELECT DISTINCT layout FROM prism_drift_scores WHERE layout <> "" ORDER BY layout ASC');
+        $rows = $stmt->fetchAll(PDO::FETCH_COLUMN, 0);
+
+        return is_array($rows) ? $rows : array();
+    }
+
     private function ensureSchema(): void
     {
         try {
@@ -184,6 +304,29 @@ class ServerModes_Database
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             CONSTRAINT fk_state_player FOREIGN KEY (user_id) REFERENCES prism_players(user_id)
                 ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+            $this->pdo->exec('CREATE TABLE IF NOT EXISTS prism_player_friends (
+            owner_id BIGINT UNSIGNED NOT NULL,
+            friend_id BIGINT UNSIGNED NOT NULL,
+            friend_name VARCHAR(32) NOT NULL DEFAULT "",
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (owner_id, friend_id),
+            INDEX idx_friend_id (friend_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+            $this->pdo->exec('CREATE TABLE IF NOT EXISTS prism_drift_scores (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            user_id BIGINT UNSIGNED NOT NULL,
+            username VARCHAR(32) NOT NULL DEFAULT "",
+            nickname VARCHAR(32) NOT NULL DEFAULT "",
+            layout VARCHAR(8) NOT NULL DEFAULT "",
+            host_id VARCHAR(32) NOT NULL DEFAULT "",
+            points DOUBLE NOT NULL DEFAULT 0,
+            max_angle DOUBLE NOT NULL DEFAULT 0,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_layout_created (layout, created_at),
+            INDEX idx_user_layout (user_id, layout)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
         } catch (PDOException $e) {
             console('serverModes: failed to ensure schema - ' . $e->getMessage());
