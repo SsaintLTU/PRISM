@@ -159,6 +159,71 @@ class ServerModes_Database
         return $stmt->fetchAll() ?: array();
     }
 
+    public function fetchVehicleMods(): array
+    {
+        if (!$this->ensureConnection()) {
+            return array();
+        }
+
+        $stmt = $this->pdo->query('SELECT id, short_name, display_name, car_code, hex_code, category, author, power_kw, weight_kg, price, raw_json, updated_at FROM prism_vehicle_mods');
+        $rows = $stmt->fetchAll();
+
+        return is_array($rows) ? $rows : array();
+    }
+
+    public function replaceVehicleMods(array $mods): void
+    {
+        if (!$this->ensureConnection()) {
+            return;
+        }
+
+        $this->pdo->beginTransaction();
+        try {
+            $this->pdo->exec('DELETE FROM prism_vehicle_mods');
+
+            $sql = 'INSERT INTO prism_vehicle_mods (id, short_name, display_name, car_code, hex_code, category, author, power_kw, weight_kg, price, raw_json, updated_at)
+                VALUES (:id, :short_name, :display_name, :car_code, :hex_code, :category, :author, :power_kw, :weight_kg, :price, :raw_json, NOW())';
+            $stmt = $this->pdo->prepare($sql);
+
+            foreach ($mods as $mod) {
+                $stmt->execute(array(
+                    ':id' => $mod['id'],
+                    ':short_name' => $mod['short_name'],
+                    ':display_name' => $mod['display_name'],
+                    ':car_code' => $mod['car_code'],
+                    ':hex_code' => $mod['hex_code'],
+                    ':category' => $mod['category'],
+                    ':author' => $mod['author'],
+                    ':power_kw' => $mod['power_kw'],
+                    ':weight_kg' => $mod['weight_kg'],
+                    ':price' => $mod['price'],
+                    ':raw_json' => $mod['raw_json'],
+                ));
+            }
+
+            $this->pdo->commit();
+        } catch (PDOException $e) {
+            $this->pdo->rollBack();
+            console('serverModes: failed to persist vehicle mod cache - ' . $e->getMessage());
+        }
+    }
+
+    public function getLatestVehicleModTimestamp(): ?int
+    {
+        if (!$this->ensureConnection()) {
+            return null;
+        }
+
+        $stmt = $this->pdo->query('SELECT UNIX_TIMESTAMP(MAX(updated_at)) AS ts FROM prism_vehicle_mods');
+        $row = $stmt->fetch();
+
+        if (!$row || empty($row['ts'])) {
+            return null;
+        }
+
+        return (int)$row['ts'];
+    }
+
     public function addFriend(int $ownerId, int $friendId, string $friendName): bool
     {
         if (!$this->ensureConnection()) {
@@ -366,6 +431,23 @@ class ServerModes_Database
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             INDEX idx_user_track (user_id, track),
             INDEX idx_created (created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+            $this->pdo->exec('CREATE TABLE IF NOT EXISTS prism_vehicle_mods (
+            id VARCHAR(32) NOT NULL PRIMARY KEY,
+            short_name VARCHAR(32) NOT NULL DEFAULT "",
+            display_name VARCHAR(128) NOT NULL DEFAULT "",
+            car_code VARCHAR(32) NOT NULL DEFAULT "",
+            hex_code VARCHAR(64) NOT NULL DEFAULT "",
+            category VARCHAR(64) NOT NULL DEFAULT "",
+            author VARCHAR(64) NOT NULL DEFAULT "",
+            power_kw DOUBLE NOT NULL DEFAULT 0,
+            weight_kg DOUBLE NOT NULL DEFAULT 0,
+            price DOUBLE NOT NULL DEFAULT 0,
+            raw_json LONGTEXT NOT NULL,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_car_code (car_code),
+            INDEX idx_hex_code (hex_code)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
         } catch (PDOException $e) {
             console('serverModes: failed to ensure schema - ' . $e->getMessage());

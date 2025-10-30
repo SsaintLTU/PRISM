@@ -8,6 +8,7 @@ class ServerModes_CruiseSystems
     public const POLICE_GROUP = 'CruisePolice';
 
     private serverModes $plugin;
+    private ServerModes_VehicleMods $vehicleMods;
     private bool $active = false;
     private array $config = array();
     private array $teleports = array();
@@ -15,9 +16,10 @@ class ServerModes_CruiseSystems
     private array $officers = array();
     private array $hudRendered = array();
 
-    public function __construct(serverModes $plugin, array $config = array())
+    public function __construct(serverModes $plugin, ServerModes_VehicleMods $vehicleMods, array $config = array())
     {
         $this->plugin = $plugin;
+        $this->vehicleMods = $vehicleMods;
         $this->applyConfig($config);
     }
 
@@ -360,11 +362,15 @@ class ServerModes_CruiseSystems
         }
 
         $vehicle =& $state['garage']['vehicles'][$car];
+        if (empty($vehicle['mod'])) {
+            $this->vehicleMods->handleVehicleActivation($player, $car, false);
+            $vehicle =& $state['garage']['vehicles'][$car];
+        }
 
         ButtonManager::removeButtonsByGroup($ucid, self::REGITRA_GROUP);
 
         $width = 70;
-        $height = 45;
+        $height = 60;
         $left = (int)((IS_X_MAX - $width) / 2);
         $top = 40;
 
@@ -374,10 +380,17 @@ class ServerModes_CruiseSystems
         $plate = $vehicle['plate'] ?? '---:---';
         $insuranceUntil = $vehicle['insurance_until'] ?? 0;
         $insuranceLabel = $insuranceUntil > time() ? '^2Valid' : '^1Expired';
+        $modLabel = $vehicle['mod']['name'] ?? $car;
+        if ($modLabel === '') {
+            $modLabel = $car;
+        }
 
         $this->drawButton($ucid, 'RegitraCar', self::REGITRA_GROUP, $left + 2, $top + 11, $width - 4, 6, '^7Car: ^3' . $car, ISB_DARK | ISB_LEFT);
-        $this->drawButton($ucid, 'RegitraPlate', self::REGITRA_GROUP, $left + 2, $top + 19, $width - 4, 6, '^7Plate: ^3' . $plate, ISB_DARK | ISB_LEFT);
-        $this->drawButton($ucid, 'RegitraInsurance', self::REGITRA_GROUP, $left + 2, $top + 27, $width - 4, 6, '^7Insurance: ' . $insuranceLabel, ISB_DARK | ISB_LEFT);
+        $this->drawButton($ucid, 'RegitraMod', self::REGITRA_GROUP, $left + 2, $top + 19, $width - 4, 6, '^7Vehicle: ^3' . $modLabel, ISB_DARK | ISB_LEFT);
+        $this->drawButton($ucid, 'RegitraPlate', self::REGITRA_GROUP, $left + 2, $top + 27, $width - 4, 6, '^7Plate: ^3' . $plate, ISB_DARK | ISB_LEFT);
+        $this->drawButton($ucid, 'RegitraInsurance', self::REGITRA_GROUP, $left + 2, $top + 35, $width - 4, 6, '^7Insurance: ' . $insuranceLabel, ISB_DARK | ISB_LEFT);
+
+        $buttonRow = $top + 43;
 
         if ($plate === '---:---') {
             $this->drawButton(
@@ -385,7 +398,7 @@ class ServerModes_CruiseSystems
                 'RegitraRegister',
                 self::REGITRA_GROUP,
                 $left + 2,
-                $top + 35,
+                $buttonRow,
                 $width - 4,
                 8,
                 '^7Register vehicle (^3150)',
@@ -398,7 +411,7 @@ class ServerModes_CruiseSystems
                 'RegitraChange',
                 self::REGITRA_GROUP,
                 $left + 2,
-                $top + 35,
+                $buttonRow,
                 $width - 4,
                 8,
                 '^7Change plate (^3250)',
@@ -410,7 +423,7 @@ class ServerModes_CruiseSystems
                 'RegitraInsuranceAction',
                 self::REGITRA_GROUP,
                 $left + 2,
-                $top + 45,
+                $buttonRow + 10,
                 $width - 4,
                 8,
                 '^7Renew insurance (^3500)',
@@ -713,7 +726,15 @@ class ServerModes_CruiseSystems
 
         $player =& $this->plugin->getPlayerRecord($ucid);
         $this->initialisePlayerState($player);
-        $vehicles = $player['state']['garage']['vehicles'];
+        $vehicles =& $player['state']['garage']['vehicles'];
+
+        foreach ($vehicles as $code => &$vehicle) {
+            if (empty($vehicle['mod'])) {
+                $this->vehicleMods->handleVehicleActivation($player, $code, false);
+                $vehicle = $player['state']['garage']['vehicles'][$code];
+            }
+        }
+        unset($vehicle);
 
         ButtonManager::removeButtonsByGroup($ucid, self::REGITRA_GROUP);
 
@@ -732,8 +753,12 @@ class ServerModes_CruiseSystems
         $row = 0;
         foreach ($vehicles as $code => $vehicle) {
             $plate = $vehicle['plate'] ?? '---:---';
-            $distance = number_format($vehicle['distance'], 2);
-            $text = sprintf('^7%s ^3%s ^7%.2f km', $code, $plate, $vehicle['distance']);
+            $distance = $vehicle['distance'] ?? 0.0;
+            $label = $vehicle['mod']['name'] ?? $code;
+            if ($label === '') {
+                $label = $code;
+            }
+            $text = sprintf('^3%s ^7(%s) ^8| ^7Plate:^3 %s ^8| ^7%.2f km', $label, $code, $plate, $distance);
             $this->drawButton($ucid, 'GarageItem' . $row, self::REGITRA_GROUP, $left + 2, $top + 10 + ($row * 6), $width - 4, 5, $text, ISB_DARK | ISB_LEFT);
             $row++;
         }
@@ -893,6 +918,9 @@ class ServerModes_CruiseSystems
             'plate' => '---:---',
             'distance' => 0.0,
             'insurance_until' => 0,
+            'mod' => array(),
+            'acquired_at' => 0,
+            'discord_announced' => false,
         );
     }
 

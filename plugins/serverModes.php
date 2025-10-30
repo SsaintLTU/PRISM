@@ -9,6 +9,7 @@ require_once __DIR__ . '/serverModes/modules/TrafficLightController.php';
 require_once __DIR__ . '/serverModes/modules/CruiseSystems.php';
 require_once __DIR__ . '/serverModes/modules/DriftSystems.php';
 require_once __DIR__ . '/serverModes/modules/Friends.php';
+require_once __DIR__ . '/serverModes/modules/VehicleMods.php';
 
 class serverModes extends Plugins
 {
@@ -36,6 +37,7 @@ class serverModes extends Plugins
     private int $autosaveInterval = 15;
 
     private ?ServerModes_TrafficLightController $trafficLights = null;
+    private ServerModes_VehicleMods $vehicleMods;
     private ServerModes_CruiseSystems $cruiseSystems;
     private ServerModes_DriftSystems $driftSystems;
     private ServerModes_RaceSystems $raceSystems;
@@ -58,7 +60,10 @@ class serverModes extends Plugins
             return;
         }
 
-        $this->cruiseSystems = new ServerModes_CruiseSystems($this, $this->config['mode_cruise'] ?? array());
+        $this->vehicleMods = new ServerModes_VehicleMods($this, $this->database, $this->config['mods_api'] ?? array());
+        $this->vehicleMods->bootstrap();
+
+        $this->cruiseSystems = new ServerModes_CruiseSystems($this, $this->vehicleMods, $this->config['mode_cruise'] ?? array());
         $this->driftSystems = new ServerModes_DriftSystems($this, $this->config['mode_drift'] ?? array());
         $this->raceSystems = new ServerModes_RaceSystems($this, $this->config['mode_race'] ?? array());
         $this->friendManager = new ServerModes_Friends($this, $this->config['social'] ?? array());
@@ -362,15 +367,22 @@ class serverModes extends Plugins
         $player['positions'][$NPL->PLID] = null;
 
         if ($this->cruiseSystems->isActive()) {
-            $player['state']['garage']['active_car'] = $NPL->CName;
-            if (!isset($player['state']['garage']['vehicles'][$NPL->CName])) {
-                $player['state']['garage']['vehicles'][$NPL->CName] = array(
+            $carCode = trim($NPL->CName);
+            $player['state']['garage']['active_car'] = $carCode;
+            $isNewVehicle = false;
+            if (!isset($player['state']['garage']['vehicles'][$carCode])) {
+                $player['state']['garage']['vehicles'][$carCode] = array(
                     'plate' => '---:---',
                     'distance' => 0.0,
                     'insurance_until' => 0,
+                    'mod' => array(),
+                    'acquired_at' => 0,
+                    'discord_announced' => false,
                 );
+                $isNewVehicle = true;
             }
             $player['state_dirty'] = true;
+            $this->vehicleMods->handleVehicleActivation($player, $carCode, $isNewVehicle);
         }
 
         $this->driftSystems->onPlayerJoinRace($player, $NPL);
@@ -580,6 +592,10 @@ class serverModes extends Plugins
             $this->trafficLights->update();
         }
 
+        if (isset($this->vehicleMods)) {
+            $this->vehicleMods->tick();
+        }
+
         if ($this->activeMode) {
             $this->activeMode->tick($this->players);
         }
@@ -716,6 +732,11 @@ class serverModes extends Plugins
     public function getDatabase(): ?ServerModes_Database
     {
         return $this->database;
+    }
+
+    public function getVehicleMods(): ServerModes_VehicleMods
+    {
+        return $this->vehicleMods;
     }
 
     public function getSnapshotInterval(): int
