@@ -10,6 +10,7 @@ require_once __DIR__ . '/serverModes/modules/CruiseSystems.php';
 require_once __DIR__ . '/serverModes/modules/DriftSystems.php';
 require_once __DIR__ . '/serverModes/modules/Friends.php';
 require_once __DIR__ . '/serverModes/modules/VehicleMods.php';
+require_once __DIR__ . '/serverModes/modules/DiscordBridge.php';
 
 class serverModes extends Plugins
 {
@@ -42,12 +43,15 @@ class serverModes extends Plugins
     private ServerModes_DriftSystems $driftSystems;
     private ServerModes_RaceSystems $raceSystems;
     private ServerModes_Friends $friendManager;
+    private ServerModes_DiscordBridge $discord;
 
     public function __construct()
     {
         $this->config = $this->loadConfig();
         $this->snapshotInterval = max(10, (int)($this->config['general']['snapshot_interval'] ?? 60));
         $this->autosaveInterval = max(5, (int)($this->config['general']['autosave_interval'] ?? 15));
+
+        $this->discord = new ServerModes_DiscordBridge($this, $this->config['mods_api'] ?? array());
 
         $this->database = new ServerModes_Database($this->config['database'] ?? array());
         if (!$this->database->isAvailable()) {
@@ -60,7 +64,12 @@ class serverModes extends Plugins
             return;
         }
 
-        $this->vehicleMods = new ServerModes_VehicleMods($this, $this->database, $this->config['mods_api'] ?? array());
+        $this->vehicleMods = new ServerModes_VehicleMods(
+            $this,
+            $this->database,
+            $this->config['mods_api'] ?? array(),
+            $this->discord
+        );
         $this->vehicleMods->bootstrap();
 
         $this->cruiseSystems = new ServerModes_CruiseSystems($this, $this->vehicleMods, $this->config['mode_cruise'] ?? array());
@@ -95,6 +104,12 @@ class serverModes extends Plugins
         $this->registerPacket('onButtonText', ISP_BTT);
         $this->registerPacket('onButtonClear', ISP_BFN);
         $this->registerPacket('onUserControlObject', ISP_UCO);
+        $this->registerPacket('onHLVCViolation', ISP_HLV);
+        $this->registerPacket('onPlayerContact', ISP_CON);
+        $this->registerPacket('onPlayerHitObject', ISP_OBH);
+        $this->registerPacket('InterfaceINFO', ISP_CIM);
+        $this->registerPacket('PlayerSeLectCar', ISP_SLC);
+        $this->registerPacket('onMessageOut', ISP_MSO);
 
         $this->registerSayCommand('bank', 'commandCruiseBank', 'Open the cruise bank.');
         $this->registerSayCommand('teleport', 'commandCruiseTeleport', 'Open teleport menu.');
@@ -296,6 +311,10 @@ class serverModes extends Plugins
             $this->activeMode->onPlayerConnected($player);
         }
 
+        if ($this->discord->isActive()) {
+            $this->discord->announcePlayerJoin($player, $this->activeHost, $this->serverGetName());
+        }
+
         return PLUGIN_CONTINUE;
     }
 
@@ -342,6 +361,10 @@ class serverModes extends Plugins
 
             if ($this->activeMode) {
                 $this->activeMode->onPlayerDisconnected($player);
+            }
+
+            if ($this->discord->isActive()) {
+                $this->discord->announcePlayerLeave($player, $this->activeHost, $this->serverGetName());
             }
         }
 
@@ -543,6 +566,125 @@ class serverModes extends Plugins
         if ($this->enabled && $this->cruiseSystems->isActive()) {
             $this->cruiseSystems->handleUserControlObject($UCO);
         }
+
+        return PLUGIN_CONTINUE;
+    }
+
+    public function onHLVCViolation(IS_HLV $HLV)
+    {
+        if (!$this->enabled) {
+            return PLUGIN_CONTINUE;
+        }
+
+        $ucid = $this->getUcidByPlid((int)$HLV->PLID);
+        if ($ucid === null) {
+            return PLUGIN_CONTINUE;
+        }
+
+        $player =& $this->ensurePlayer($ucid);
+        $this->cruiseSystems->handleHlvcViolation($player, $HLV);
+
+        return PLUGIN_CONTINUE;
+    }
+
+    public function onPlayerContact(IS_CON $CON)
+    {
+        if (!$this->enabled) {
+            return PLUGIN_CONTINUE;
+        }
+
+        $closingSpeed = (float)$CON->getClosingSpeed();
+
+        $pairs = array(
+            array('self' => $CON->getA(), 'other' => $CON->getB()),
+            array('self' => $CON->getB(), 'other' => $CON->getA()),
+        );
+
+        foreach ($pairs as $pair) {
+            /** @var CarContact $self */
+            $self = $pair['self'];
+            $plid = (int)$self->PLID;
+            $ucid = $this->getUcidByPlid($plid);
+            if ($ucid === null) {
+                continue;
+            }
+
+            $player =& $this->ensurePlayer($ucid);
+            $other = $pair['other'];
+            $otherName = null;
+            if ($other instanceof CarContact) {
+                $otherUcid = $this->getUcidByPlid((int)$other->PLID);
+                if ($otherUcid !== null) {
+                    $otherName = $this->getPlayerDisplayName($otherUcid);
+                }
+            }
+
+            $this->cruiseSystems->handleVehicleContact($player, $self, $closingSpeed, $otherName);
+        }
+
+        return PLUGIN_CONTINUE;
+    }
+
+    public function onPlayerHitObject(IS_OBH $OBH)
+    {
+        if (!$this->enabled) {
+            return PLUGIN_CONTINUE;
+        }
+
+        $ucid = $this->getUcidByPlid((int)$OBH->PLID);
+        if ($ucid === null) {
+            return PLUGIN_CONTINUE;
+        }
+
+        $player =& $this->ensurePlayer($ucid);
+        $this->cruiseSystems->handleObjectHit($player, $OBH);
+
+        return PLUGIN_CONTINUE;
+    }
+
+    public function InterfaceINFO(IS_CIM $CIM)
+    {
+        if (!$this->enabled || $CIM->UCID == 0) {
+            return PLUGIN_CONTINUE;
+        }
+
+        $player =& $this->ensurePlayer($CIM->UCID);
+        $this->cruiseSystems->handleInterfaceMode($player, $CIM);
+
+        return PLUGIN_CONTINUE;
+    }
+
+    public function PlayerSeLectCar(IS_SLC $SLC)
+    {
+        if (!$this->enabled || $SLC->UCID == 0) {
+            return PLUGIN_CONTINUE;
+        }
+
+        $player =& $this->ensurePlayer($SLC->UCID);
+        $this->cruiseSystems->handleCarSelection($player, $SLC);
+
+        return PLUGIN_CONTINUE;
+    }
+
+    public function onMessageOut(IS_MSO $MSO)
+    {
+        if (!$this->enabled || !$this->discord->isActive()) {
+            return PLUGIN_CONTINUE;
+        }
+
+        if ($MSO->UserType !== MSO_USER || $MSO->UCID <= 0) {
+            return PLUGIN_CONTINUE;
+        }
+
+        $message = substr($MSO->Msg, (int)$MSO->TextStart);
+        $clean = $this->sanitiseChatMessage($message);
+
+        if ($clean === '' || $clean[0] === '/' || $clean[0] === '!') {
+            return PLUGIN_CONTINUE;
+        }
+
+        $player =& $this->ensurePlayer($MSO->UCID);
+        $this->discord->relayChatMessage($player, $clean);
 
         return PLUGIN_CONTINUE;
     }
@@ -968,6 +1110,36 @@ class serverModes extends Plugins
         return $this->ensurePlayer($ucid);
     }
 
+    private function getPlayerDisplayName(int $ucid): string
+    {
+        if (isset($this->players[$ucid])) {
+            $nickname = trim($this->players[$ucid]['nickname'] ?? '');
+            $username = trim($this->players[$ucid]['username'] ?? '');
+
+            if ($nickname !== '') {
+                return $nickname;
+            }
+
+            if ($username !== '') {
+                return $username;
+            }
+        }
+
+        $client = $this->getClientInfo($ucid);
+        if ($client) {
+            $pname = trim($client->PName ?? '');
+            $uname = trim($client->UName ?? '');
+            if ($pname !== '') {
+                return $pname;
+            }
+            if ($uname !== '') {
+                return $uname;
+            }
+        }
+
+        return sprintf('UCID %d', $ucid);
+    }
+
     public function &getPlayerMap(): array
     {
         return $this->players;
@@ -989,6 +1161,21 @@ class serverModes extends Plugins
         }
 
         return $count;
+    }
+
+    private function sanitiseChatMessage(string $message): string
+    {
+        $stripped = preg_replace('/\^./', '', $message);
+        if ($stripped === null) {
+            $stripped = $message;
+        }
+
+        $stripped = preg_replace('/[\x00-\x1F\x7F]+/u', '', $stripped);
+        if ($stripped === null) {
+            $stripped = $message;
+        }
+
+        return trim($stripped);
     }
 
     public function getUcidByPlid(int $plid): ?int
