@@ -197,7 +197,8 @@ class ServerModes_CruiseSystems
             'y' => $info->Y / 65536.0,
         );
 
-        if ($this->updateAcceleration($player, $speedKph)) {
+        $sampleTime = microtime(true);
+        if ($this->updateAcceleration($player, $speedKph, $sampleTime)) {
             $this->markStateDirty($player);
         }
 
@@ -213,6 +214,57 @@ class ServerModes_CruiseSystems
         $state['stats']['licenses'] = max($state['stats']['licenses'], (int)floor($totalDistance / max(1.0, $this->getConfigNumber('license_km', 44.0))));
 
         $this->markStateDirty($player);
+    }
+
+    public function onCarStateChange(array &$player, IS_CSC $packet): void
+    {
+        if (!$this->active) {
+            return;
+        }
+
+        $this->initialisePlayerState($player);
+
+        if (!isset($player['state']['telemetry']) || !is_array($player['state']['telemetry'])) {
+            return;
+        }
+
+        $telemetry =& $player['state']['telemetry'];
+        if (!isset($telemetry['accel']) || !is_array($telemetry['accel'])) {
+            $telemetry['accel'] = $this->defaultAccelerationState();
+        } else {
+            $telemetry['accel'] = array_merge($this->defaultAccelerationState(), $telemetry['accel']);
+        }
+
+        $accel =& $telemetry['accel'];
+        $changed = false;
+        $now = microtime(true);
+        $speed = (float)($telemetry['speed'] ?? 0.0);
+
+        if ($packet->CSCAction === CSC_STOP) {
+            if (!empty($accel['active']) || empty($accel['ready']) || ($accel['start'] ?? 0.0) > 0.0) {
+                $accel['active'] = false;
+                $accel['ready'] = true;
+                $accel['start'] = 0.0;
+                $accel['start_speed'] = 0.0;
+                $accel['armed_at'] = $now;
+                $accel['last_event'] = 'stop';
+                $changed = true;
+            }
+        } elseif ($packet->CSCAction === CSC_START) {
+            if (empty($accel['active']) && !empty($accel['ready']) && $speed <= 5.0) {
+                $accel['active'] = true;
+                $accel['ready'] = false;
+                $accel['start'] = $now;
+                $accel['start_speed'] = $speed;
+                $accel['armed_at'] = 0.0;
+                $accel['last_event'] = 'start';
+                $changed = true;
+            }
+        }
+
+        if ($changed) {
+            $this->markStateDirty($player);
+        }
     }
 
     public function onLapCompleted(array &$player, IS_LAP $lap): void
@@ -1042,7 +1094,12 @@ class ServerModes_CruiseSystems
         } elseif (!empty($accel['ready'])) {
             $status = '^2Ready';
         } else {
-            $status = '^8Idle';
+            $lastEvent = $accel['last_event'] ?? '';
+            if ($lastEvent === 'complete') {
+                $status = '^2Complete';
+            } else {
+                $status = '^8Idle';
+            }
         }
         $accelLine = sprintf('^70-100:^3%s ^8| ^7Best:^3%s ^8| ^7Status:%s', $lastAccel, $bestAccel, $status);
 
@@ -1340,7 +1397,7 @@ class ServerModes_CruiseSystems
         return $this->dailyLeaderboardCache['rows'] ?? array();
     }
 
-    private function updateAcceleration(array &$player, float $speedKph): bool
+    private function updateAcceleration(array &$player, float $speedKph, ?float $timestamp = null): bool
     {
         if (!isset($player['state']['telemetry']) || !is_array($player['state']['telemetry'])) {
             return false;
@@ -1348,38 +1405,17 @@ class ServerModes_CruiseSystems
 
         $telemetry =& $player['state']['telemetry'];
         if (!isset($telemetry['accel']) || !is_array($telemetry['accel'])) {
-            $telemetry['accel'] = array(
-                'start' => 0.0,
-                'last' => 0.0,
-                'best' => 0.0,
-                'active' => false,
-                'ready' => true,
-            );
+            $telemetry['accel'] = $this->defaultAccelerationState();
+        } else {
+            $telemetry['accel'] = array_merge($this->defaultAccelerationState(), $telemetry['accel']);
         }
 
         $accel =& $telemetry['accel'];
+        $now = $timestamp ?? microtime(true);
         $changed = false;
-        $now = microtime(true);
 
-        if ($speedKph <= 2.0) {
-            if (!empty($accel['active']) || empty($accel['ready'])) {
-                $accel['active'] = false;
-                $accel['ready'] = true;
-                $accel['start'] = 0.0;
-                $changed = true;
-            }
-            return $changed;
-        }
-
-        if (empty($accel['active']) && !empty($accel['ready']) && $speedKph >= 5.0) {
-            $accel['active'] = true;
-            $accel['ready'] = false;
-            $accel['start'] = $now;
-            $changed = true;
-        }
-
-        if (!empty($accel['active'])) {
-            if ($speedKph >= 100.0 && ($accel['start'] ?? 0.0) > 0.0) {
+        if (!empty($accel['active']) && ($accel['start'] ?? 0.0) > 0.0) {
+            if ($speedKph >= 100.0) {
                 $elapsed = max(0.0, $now - (float)$accel['start']);
                 $accel['last'] = $elapsed;
                 $best = (float)($accel['best'] ?? 0.0);
@@ -1387,13 +1423,10 @@ class ServerModes_CruiseSystems
                     $accel['best'] = $elapsed;
                 }
                 $accel['active'] = false;
-                $accel['ready'] = false;
                 $accel['start'] = 0.0;
-                $changed = true;
-            } elseif ($speedKph < 3.0) {
-                $accel['active'] = false;
-                $accel['ready'] = true;
-                $accel['start'] = 0.0;
+                $accel['start_speed'] = 0.0;
+                $accel['last_event'] = 'complete';
+                $accel['armed_at'] = 0.0;
                 $changed = true;
             }
         }
@@ -1794,6 +1827,20 @@ class ServerModes_CruiseSystems
         $player['state']['police']['officer'] = $this->isOfficer($player);
     }
 
+    private function defaultAccelerationState(): array
+    {
+        return array(
+            'start' => 0.0,
+            'last' => 0.0,
+            'best' => 0.0,
+            'active' => false,
+            'ready' => true,
+            'armed_at' => 0.0,
+            'start_speed' => 0.0,
+            'last_event' => '',
+        );
+    }
+
     private function defaultState(): array
     {
         $now = time();
@@ -1833,13 +1880,7 @@ class ServerModes_CruiseSystems
                 'position' => array('x' => 0.0, 'y' => 0.0),
                 'last_move' => $now,
                 'heading' => 0.0,
-                'accel' => array(
-                    'start' => 0.0,
-                    'last' => 0.0,
-                    'best' => 0.0,
-                    'active' => false,
-                    'ready' => true,
-                ),
+                'accel' => $this->defaultAccelerationState(),
             ),
             'ui' => array(
                 'daily' => array(

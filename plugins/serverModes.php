@@ -88,6 +88,7 @@ class serverModes extends Plugins
         $this->registerPacket('onPlayerJoinRace', ISP_NPL);
         $this->registerPacket('onPlayerLeaveRace', ISP_PLL);
         $this->registerPacket('onCarInfo', ISP_MCI);
+        $this->registerPacket('onCarStateChange', ISP_CSC);
         $this->registerPacket('onLapCompleted', ISP_LAP);
         $this->registerPacket('onRaceResult', ISP_RES);
         $this->registerPacket('onButtonClick', ISP_BTC);
@@ -437,6 +438,30 @@ class serverModes extends Plugins
 
             $player =& $this->players[$ucid];
             $this->processMovement($player, $plid, $carInfo);
+        }
+
+        return PLUGIN_CONTINUE;
+    }
+
+    public function onCarStateChange(IS_CSC $CSC)
+    {
+        if (!$this->enabled) {
+            return PLUGIN_CONTINUE;
+        }
+
+        $plid = $CSC->PLID;
+        if ($plid == 0 || !isset($this->plidMap[$plid])) {
+            return PLUGIN_CONTINUE;
+        }
+
+        $ucid = $this->plidMap[$plid];
+        if (!isset($this->players[$ucid])) {
+            return PLUGIN_CONTINUE;
+        }
+
+        $player =& $this->players[$ucid];
+        if ($this->activeMode) {
+            $this->activeMode->onCarStateChange($player, $CSC);
         }
 
         return PLUGIN_CONTINUE;

@@ -42,6 +42,10 @@ abstract class ServerModes_Mode
     {
     }
 
+    public function onCarStateChange(array &$player, IS_CSC $packet): void
+    {
+    }
+
     public function processMovement(array &$player, float $deltaKm, float $speedKph, CompCar $info): void
     {
     }

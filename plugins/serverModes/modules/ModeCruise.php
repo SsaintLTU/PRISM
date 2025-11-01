@@ -42,6 +42,13 @@ class ServerModes_ModeCruise extends ServerModes_Mode
         }
     }
 
+    public function onCarStateChange(array &$player, IS_CSC $packet): void
+    {
+        if ($this->systems) {
+            $this->systems->onCarStateChange($player, $packet);
+        }
+    }
+
     public function processMovement(array &$player, float $deltaKm, float $speedKph, CompCar $info): void
     {
         $rate = $this->getNumber('money_per_km', 7.5);
