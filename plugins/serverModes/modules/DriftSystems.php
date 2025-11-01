@@ -62,7 +62,7 @@ class ServerModes_DriftSystems
     {
         $ucid = $player['ucid'] ?? 0;
         if ($ucid > 0) {
-            $this->finaliseCombo($player, true);
+            $this->finaliseCombo($player);
             ButtonManager::removeButtonsByGroup($ucid, self::HUD_GROUP);
             ButtonManager::removeButtonsByGroup($ucid, self::BOARD_GROUP);
             unset($this->playerFlags[$ucid]);
@@ -77,6 +77,31 @@ class ServerModes_DriftSystems
         $this->initialisePlayer($player);
         $player['state']['drift']['layout'] = $this->plugin->getCurrentTrack() ?: ($player['state']['drift']['layout'] ?? '');
         $this->markStateDirty($player);
+    }
+
+    public function onLapCompleted(array &$player, IS_LAP $lap): void
+    {
+        if (!$this->active) {
+            return;
+        }
+
+        $this->initialisePlayer($player);
+        $ucid = $player['ucid'] ?? 0;
+        if ($ucid === 0) {
+            return;
+        }
+
+        $drift =& $player['state']['drift'];
+        $drift['last_finish'] = microtime(true);
+        $drift['layout'] = $this->plugin->getCurrentTrack() ?: ($drift['layout'] ?? '');
+        $this->playerFlags[$ucid]['dirty'] = true;
+
+        if (($drift['current_combo'] ?? 0.0) > 0.0) {
+            $this->finaliseCombo($player);
+        } else {
+            $drift['last_saved_finish'] = $drift['last_finish'];
+            $this->markStateDirty($player);
+        }
     }
 
     public function onDriftSample(array &$player, float $deltaKm, float $speedKph, float $slipAngle, CompCar $info): void
@@ -399,6 +424,8 @@ class ServerModes_DriftSystems
             'last_angle' => 0.0,
             'last_speed' => 0.0,
             'last_sample' => 0.0,
+            'last_finish' => 0.0,
+            'last_saved_finish' => 0.0,
             'ui' => array(
                 'visible' => true,
                 'layout_index' => 0,
@@ -414,7 +441,7 @@ class ServerModes_DriftSystems
         $player['state_dirty'] = true;
     }
 
-    private function finaliseCombo(array &$player, bool $force = false): void
+    private function finaliseCombo(array &$player): void
     {
         $drift =& $player['state']['drift'];
         $combo = $drift['current_combo'] ?? 0.0;
@@ -423,7 +450,8 @@ class ServerModes_DriftSystems
         }
 
         $minCombo = $this->getConfigNumber('min_combo_points', 50.0);
-        if ($combo >= $minCombo) {
+        $canRecord = $this->canRecordCombo($drift);
+        if ($combo >= $minCombo && $canRecord) {
             $drift['best_combo'] = max($drift['best_combo'], $combo);
             $userId = $player['user_id'] ?? 0;
             if ($userId > 0) {
@@ -443,6 +471,7 @@ class ServerModes_DriftSystems
             }
         }
 
+        $drift['last_saved_finish'] = max((float)($drift['last_saved_finish'] ?? 0.0), (float)($drift['last_finish'] ?? 0.0));
         $drift['current_combo'] = 0.0;
         $drift['max_angle'] = 0.0;
         $drift['last_activity'] = 0.0;
@@ -617,6 +646,13 @@ class ServerModes_DriftSystems
             return $default;
         }
         return (float)$this->config[$key];
+    }
+
+    private function canRecordCombo(array $drift): bool
+    {
+        $lastFinish = (float)($drift['last_finish'] ?? 0.0);
+        $lastSaved = (float)($drift['last_saved_finish'] ?? 0.0);
+        return $lastFinish > 0.0 && $lastFinish > $lastSaved;
     }
 
     private function buildGauge(float $value, float $max, int $slots = 20): string

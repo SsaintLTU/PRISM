@@ -328,16 +328,21 @@ class ServerModes_RaceSystems
         $top = 50;
         $height = 10 + (count($this->voteState['options']) * 6);
 
-        $background = new Button($ucid, 'RaceVoteBG', self::VOTE_GROUP);
-        $background->L($left)->T($top)->W(60)->H($height)->BStyle(ISB_DARK)->Text('')->Send();
+        $activeKeys = array();
 
-        $title = new Button($ucid, 'RaceVoteTitle', self::VOTE_GROUP);
+        $background = $this->getButton($ucid, 'RaceVoteBG', self::VOTE_GROUP);
+        $background->L($left)->T($top)->W(60)->H($height)->BStyle(ISB_DARK)->Text('')->Send();
+        $activeKeys[] = 'RaceVoteBG';
+
+        $title = $this->getButton($ucid, 'RaceVoteTitle', self::VOTE_GROUP);
         $title->L($left + 2)->T($top + 2)->W(56)->H(6)->BStyle(ISB_DARK | ISB_YELLOW)->Text('^7Vote next layout')->Send();
+        $activeKeys[] = 'RaceVoteTitle';
 
         $index = 0;
         $choice = $this->voteState['votes'][$ucid] ?? '';
         foreach ($this->voteState['options'] as $option) {
-            $button = new Button($ucid, 'RaceVoteOpt' . $index, self::VOTE_GROUP);
+            $key = 'RaceVoteOpt' . $index;
+            $button = $this->getButton($ucid, $key, self::VOTE_GROUP);
             $style = ISB_DARK | ISB_CLICK | ISB_LEFT;
             if ($choice === $option) {
                 $style |= ISB_GREEN;
@@ -347,15 +352,44 @@ class ServerModes_RaceSystems
                 ->Text('^3' . $option)
                 ->registerOnClick($this->plugin, 'handleRaceButton', array($ucid, 'vote_select', $option));
             $button->Send();
+            $activeKeys[] = $key;
             $index++;
         }
 
-        $close = new Button($ucid, 'RaceVoteClose', self::VOTE_GROUP);
+        $close = $this->getButton($ucid, 'RaceVoteClose', self::VOTE_GROUP);
         $close->L($left + 20)->T($top + $height - 6)->W(20)->H(5)
             ->BStyle(ISB_DARK | ISB_CLICK)
             ->Text('^7Close')
             ->registerOnClick($this->plugin, 'handleRaceButton', array($ucid, 'vote_close'));
         $close->Send();
+        $activeKeys[] = 'RaceVoteClose';
+
+        $this->removeUnusedVoteButtons($ucid, $activeKeys);
+    }
+
+    private function getButton(int $ucid, string $key, string $group): Button
+    {
+        $button = ButtonManager::getButtonForKey($ucid, $key);
+        if (!$button instanceof Button) {
+            $button = new Button($ucid, $key, $group);
+        }
+
+        return $button;
+    }
+
+    private function removeUnusedVoteButtons(int $ucid, array $activeKeys): void
+    {
+        $existing = ButtonManager::getButtonsForGroup($ucid, self::VOTE_GROUP);
+        foreach ($existing as $button) {
+            if (!$button instanceof Button) {
+                continue;
+            }
+
+            $key = $button->key();
+            if (strpos($key, 'RaceVoteOpt') === 0 && !in_array($key, $activeKeys, true)) {
+                ButtonManager::removeButton($button);
+            }
+        }
     }
 
     private function finaliseVote(): void
@@ -464,19 +498,11 @@ class ServerModes_RaceSystems
         $line1 = sprintf('^7Potential ^3%d ^8| ^7Class ^3%s ^8| ^7Car ^3%s ^8| ^7Best ^3%s', $potential, $class ?: '-', $car ?: '-', $bestText);
         $line2 = sprintf('^7First ^3%s ^8| ^7Forced ^3%s ^8| ^7Qual %s', $this->firstClass ?: '-', $forced, $qualRemaining > 0 ? sprintf('^3%ds', $qualRemaining) : '^8-');
 
-        $button1 = ButtonManager::getButtonForKey($ucid, 'RaceHudMain');
-        if ($button1 === null) {
-            $button1 = new Button($ucid, 'RaceHudMain', self::HUD_GROUP);
-            $button1->L(0)->T(0)->W(200)->H(4)->BStyle(ISB_DARK | ISB_LEFT);
-        }
-        $button1->Text($line1)->Send();
+        $button1 = $this->getButton($ucid, 'RaceHudMain', self::HUD_GROUP);
+        $button1->L(0)->T(0)->W(200)->H(4)->BStyle(ISB_DARK | ISB_LEFT)->Text($line1)->Send();
 
-        $button2 = ButtonManager::getButtonForKey($ucid, 'RaceHudInfo');
-        if ($button2 === null) {
-            $button2 = new Button($ucid, 'RaceHudInfo', self::HUD_GROUP);
-            $button2->L(0)->T(4)->W(200)->H(4)->BStyle(ISB_DARK | ISB_LEFT);
-        }
-        $button2->Text($line2)->Send();
+        $button2 = $this->getButton($ucid, 'RaceHudInfo', self::HUD_GROUP);
+        $button2->L(0)->T(4)->W(200)->H(4)->BStyle(ISB_DARK | ISB_LEFT)->Text($line2)->Send();
     }
 
     private function triggerClassPromotion(array $player): void
@@ -524,6 +550,10 @@ class ServerModes_RaceSystems
         foreach ($entries as $entry) {
             $position = (int)$entry['position'];
             if ($position > 3) {
+                continue;
+            }
+
+            if (($entry['time'] ?? 0.0) <= 0.0) {
                 continue;
             }
 

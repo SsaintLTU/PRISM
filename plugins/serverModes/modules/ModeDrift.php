@@ -64,6 +64,13 @@ class ServerModes_ModeDrift extends ServerModes_Mode
         }
     }
 
+    public function onLapCompleted(array &$player, IS_LAP $lap): void
+    {
+        if ($this->systems) {
+            $this->systems->onLapCompleted($player, $lap);
+        }
+    }
+
     public function tick(array &$players): void
     {
         if ($this->systems) {
