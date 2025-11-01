@@ -945,6 +945,12 @@ class serverModes extends Plugins
         return $this->players;
     }
 
+    public function &getClientInfo(int $ucid, $hostId = null)
+    {
+        $client =& parent::getClientByUCID($ucid, $hostId);
+        return $client;
+    }
+
     public function getActivePlayerCount(): int
     {
         $count = 0;

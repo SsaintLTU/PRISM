@@ -520,7 +520,7 @@ class ServerModes_CruiseSystems
         }
 
         $info = $this->teleports[$key];
-        $client = $this->plugin->getClientByUCID($ucid);
+        $client = $this->plugin->getClientInfo($ucid);
         if (!$client) {
             return;
         }
@@ -762,7 +762,7 @@ class ServerModes_CruiseSystems
             return;
         }
 
-        $targetClient = $this->plugin->getClientByUCID($targetUcid);
+        $targetClient = $this->plugin->getClientInfo($targetUcid);
         if (!$targetClient) {
             $this->sendMessage($officerUcid, '^1Target player left.');
             return;
@@ -859,7 +859,7 @@ class ServerModes_CruiseSystems
                 ButtonManager::removeButtonsByGroup($officerUcid, self::POLICE_GROUP);
                 return;
             case 'police_release':
-                $targetClient = $this->plugin->getClientByUCID($targetUcid);
+                $targetClient = $this->plugin->getClientInfo($targetUcid);
                 if ($targetClient) {
                     $this->sendMessage($targetUcid, '^2You have been released by the officer.');
                 }
@@ -1900,7 +1900,7 @@ class ServerModes_CruiseSystems
 
     private function getPlayerDisplayName(int $ucid, array $players): string
     {
-        $client = $this->plugin->getClientByUCID($ucid);
+        $client = $this->plugin->getClientInfo($ucid);
         if ($client && !empty($client->PName)) {
             return $client->PName;
         }
@@ -1980,7 +1980,7 @@ class ServerModes_CruiseSystems
             $dy = $pos['y'] - $officerPos['y'];
             $distance = sqrt(($dx * $dx) + ($dy * $dy));
             if ($distance <= $radius) {
-                $client = $this->plugin->getClientByUCID($ucid);
+                $client = $this->plugin->getClientInfo($ucid);
                 if ($client) {
                     $results[$ucid] = array(
                         'name' => $client->PName,
@@ -2004,7 +2004,7 @@ class ServerModes_CruiseSystems
             return;
         }
 
-        $targetClient = $this->plugin->getClientByUCID($targetUcid);
+        $targetClient = $this->plugin->getClientInfo($targetUcid);
         if (!$targetClient) {
             $this->sendMessage($officerUcid, '^1Target player left.');
             return;
