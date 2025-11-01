@@ -19,8 +19,16 @@ class gmeter extends Plugins {
 		$cTime = microtime(TRUE);
 		foreach ($Packet->Info as $CompCar) {
 			# Spawn a new button instance if one is not here.
-			if (!isset($this->BTNs[$CompCar->PLID]))
-				$this->BTNs[$CompCar->PLID] = IS_BTN()->T(184)->L(164)->W(10)->H(6)->BStyle(ISB_DARK + ISB_RIGHT + 1)->Send();
+                        if (!isset($this->BTNs[$CompCar->PLID])) {
+                                $buttonKey = sprintf('GForceMeter_%d', $CompCar->PLID);
+                                $this->BTNs[$CompCar->PLID] = (new Button(Button::$TO_ALL, $buttonKey, 'gmeter'))
+                                        ->T(184)
+                                        ->L(164)
+                                        ->W(10)
+                                        ->H(6)
+                                        ->BStyle(ISB_DARK | ISB_RIGHT | ISB_YELLOW)
+                                        ->Send();
+                        }
 
 			# Speeds
 			$cSpeed = (($CompCar->Speed / 32768) * 100); # Convert to Meters Per Second
@@ -33,7 +41,7 @@ class gmeter extends Plugins {
 			$gForce = round(($cSpeed - $lSpeed) / ($this::GRAVITY * ($cTime - $lTime)), 2);
 
 			# Update Button
-			$this->BTNs[$CompCar->PLID]->Text(sprintf('%.2f', $gForce))->Send();
+                        $this->BTNs[$CompCar->PLID]->Text(sprintf('%.2f', $gForce))->Send();
 
 			# Save State
 			$this->TIMEs[$CompCar->PLID] = $cTime;

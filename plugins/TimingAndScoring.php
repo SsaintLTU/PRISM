@@ -61,17 +61,17 @@ class TimingAndScoring extends Plugins
 	{
 		$bName = new Button($iUCID, 'PName', 'FOM');
 		$bName->L(40)->T(166)->W(40)->H(8);
-		$bName->BStyle |= ISB_DARK + ISB_RIGHT;
+            $bName->BStyle |= ISB_DARK | ISB_RIGHT;
 		$bName->Text($sPName)->send();
 	
 		$bTime = new Button($iUCID, 'STime', 'FOM');
 		$bTime->L(40)->T(174)->W(40)->H(8);
-		$bTime->BStyle |= ISB_DARK + ISB_RIGHT;
+            $bTime->BStyle |= ISB_DARK | ISB_RIGHT;
 		$bTime->Text($sTime)->send();
 	
 		$bΔ = new Button($iUCID, 'Delta', 'FOM');
 		$bΔ->L(40)->T(182)->W(40)->H(8);
-		$bΔ->BStyle |= ISB_DARK + ISB_RIGHT;
+            $bΔ->BStyle |= ISB_DARK | ISB_RIGHT;
 		$bΔ->Text($sΔ)->send();
 	
 		$this->createTimer('OSR', 10, Timer::CLOSE, array($iUCID));
