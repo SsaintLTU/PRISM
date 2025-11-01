@@ -34,6 +34,8 @@ class Button extends IS_BTN
             }
             parent::send($hostId);
         }
+
+        return $this;
     }
 
     public function registerOnClick(Plugins $plugin, $methodName, $params = NULL)
