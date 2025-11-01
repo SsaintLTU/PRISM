@@ -4,6 +4,8 @@ class ServerModes_Database
     private array $config;
     private ?PDO $pdo = null;
     private bool $available;
+    /** @var array<string, PDOStatement> */
+    private array $statementCache = array();
 
     public function __construct(array $config = array())
     {
@@ -45,6 +47,9 @@ class ServerModes_Database
 
         $this->pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         $this->pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+        $this->pdo->setAttribute(PDO::ATTR_EMULATE_PREPARES, false);
+
+        $this->statementCache = array();
 
         $this->ensureSchema();
 
@@ -57,7 +62,11 @@ class ServerModes_Database
             return null;
         }
 
-        $stmt = $this->pdo->prepare('SELECT user_id, username, nickname, total_distance, total_earnings, total_xp, lap_count, last_mode FROM prism_players WHERE user_id = :id');
+        $stmt = $this->prepareStatement('SELECT user_id, username, nickname, total_distance, total_earnings, total_xp, lap_count, last_mode FROM prism_players WHERE user_id = :id');
+        if (!$stmt) {
+            return null;
+        }
+
         $stmt->execute(array(':id' => $userId));
         $row = $stmt->fetch();
 
@@ -82,7 +91,11 @@ class ServerModes_Database
                     last_mode = VALUES(last_mode),
                     last_seen = VALUES(last_seen)';
 
-        $stmt = $this->pdo->prepare($sql);
+        $stmt = $this->prepareStatement($sql);
+        if (!$stmt) {
+            return;
+        }
+
         $stmt->execute(array(
             ':user_id' => $payload['user_id'],
             ':username' => $payload['username'] ?? '',
@@ -102,7 +115,11 @@ class ServerModes_Database
             return array();
         }
 
-        $stmt = $this->pdo->prepare('SELECT state_json FROM prism_player_state WHERE user_id = :id');
+        $stmt = $this->prepareStatement('SELECT state_json FROM prism_player_state WHERE user_id = :id');
+        if (!$stmt) {
+            return array();
+        }
+
         $stmt->execute(array(':id' => $userId));
         $row = $stmt->fetch();
 
@@ -121,9 +138,13 @@ class ServerModes_Database
         }
 
         $json = json_encode($state, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        $stmt = $this->pdo->prepare('INSERT INTO prism_player_state (user_id, state_json, updated_at)
+        $stmt = $this->prepareStatement('INSERT INTO prism_player_state (user_id, state_json, updated_at)
                 VALUES (:id, :json, NOW())
                 ON DUPLICATE KEY UPDATE state_json = VALUES(state_json), updated_at = VALUES(updated_at)');
+        if (!$stmt) {
+            return;
+        }
+
         $stmt->execute(array(':id' => $userId, ':json' => $json));
     }
 
@@ -136,7 +157,11 @@ class ServerModes_Database
         $sql = 'INSERT INTO prism_player_snapshots (user_id, mode, distance, earnings, xp, lap_count, created_at)
                 VALUES (:user_id, :mode, :distance, :earnings, :xp, :lap_count, NOW())';
 
-        $stmt = $this->pdo->prepare($sql);
+        $stmt = $this->prepareStatement($sql);
+        if (!$stmt) {
+            return;
+        }
+
         $stmt->execute(array(
             ':user_id' => $payload['user_id'],
             ':mode' => $payload['mode'] ?? '',
@@ -153,7 +178,11 @@ class ServerModes_Database
             return array();
         }
 
-        $stmt = $this->pdo->prepare('SELECT friend_id, friend_name, created_at FROM prism_player_friends WHERE owner_id = :id ORDER BY friend_name');
+        $stmt = $this->prepareStatement('SELECT friend_id, friend_name, created_at FROM prism_player_friends WHERE owner_id = :id ORDER BY friend_name');
+        if (!$stmt) {
+            return array();
+        }
+
         $stmt->execute(array(':id' => $userId));
 
         return $stmt->fetchAll() ?: array();
@@ -165,7 +194,12 @@ class ServerModes_Database
             return array();
         }
 
-        $stmt = $this->pdo->query('SELECT id, short_name, display_name, car_code, hex_code, category, author, power_kw, weight_kg, price, raw_json, updated_at FROM prism_vehicle_mods');
+        $stmt = $this->prepareStatement('SELECT id, short_name, display_name, car_code, hex_code, category, author, power_kw, weight_kg, price, raw_json, updated_at FROM prism_vehicle_mods');
+        if (!$stmt) {
+            return array();
+        }
+
+        $stmt->execute();
         $rows = $stmt->fetchAll();
 
         return is_array($rows) ? $rows : array();
@@ -183,7 +217,11 @@ class ServerModes_Database
 
             $sql = 'INSERT INTO prism_vehicle_mods (id, short_name, display_name, car_code, hex_code, category, author, power_kw, weight_kg, price, raw_json, updated_at)
                 VALUES (:id, :short_name, :display_name, :car_code, :hex_code, :category, :author, :power_kw, :weight_kg, :price, :raw_json, NOW())';
-            $stmt = $this->pdo->prepare($sql);
+            $stmt = $this->prepareStatement($sql);
+            if (!$stmt) {
+                $this->pdo->rollBack();
+                return;
+            }
 
             foreach ($mods as $mod) {
                 $stmt->execute(array(
@@ -214,7 +252,12 @@ class ServerModes_Database
             return null;
         }
 
-        $stmt = $this->pdo->query('SELECT UNIX_TIMESTAMP(MAX(updated_at)) AS ts FROM prism_vehicle_mods');
+        $stmt = $this->prepareStatement('SELECT UNIX_TIMESTAMP(MAX(updated_at)) AS ts FROM prism_vehicle_mods');
+        if (!$stmt) {
+            return null;
+        }
+
+        $stmt->execute();
         $row = $stmt->fetch();
 
         if (!$row || empty($row['ts'])) {
@@ -234,7 +277,11 @@ class ServerModes_Database
                 VALUES (:owner, :friend, :name, NOW())
                 ON DUPLICATE KEY UPDATE friend_name = VALUES(friend_name)';
 
-        $stmt = $this->pdo->prepare($sql);
+        $stmt = $this->prepareStatement($sql);
+        if (!$stmt) {
+            return false;
+        }
+
         return $stmt->execute(array(
             ':owner' => $ownerId,
             ':friend' => $friendId,
@@ -248,7 +295,11 @@ class ServerModes_Database
             return;
         }
 
-        $stmt = $this->pdo->prepare('DELETE FROM prism_player_friends WHERE owner_id = :owner AND friend_id = :friend');
+        $stmt = $this->prepareStatement('DELETE FROM prism_player_friends WHERE owner_id = :owner AND friend_id = :friend');
+        if (!$stmt) {
+            return;
+        }
+
         $stmt->execute(array(':owner' => $ownerId, ':friend' => $friendId));
     }
 
@@ -261,7 +312,11 @@ class ServerModes_Database
         $sql = 'INSERT INTO prism_drift_scores (user_id, username, nickname, layout, host_id, points, max_angle, created_at)
                 VALUES (:user_id, :username, :nickname, :layout, :host_id, :points, :max_angle, NOW())';
 
-        $stmt = $this->pdo->prepare($sql);
+        $stmt = $this->prepareStatement($sql);
+        if (!$stmt) {
+            return;
+        }
+
         $stmt->execute(array(
             ':user_id' => $payload['user_id'],
             ':username' => $payload['username'] ?? '',
@@ -282,7 +337,11 @@ class ServerModes_Database
         $sql = 'INSERT INTO prism_race_results (user_id, username, nickname, track, car, class, position, points, race_time, created_at)
                 VALUES (:user_id, :username, :nickname, :track, :car, :class, :position, :points, :race_time, NOW())';
 
-        $stmt = $this->pdo->prepare($sql);
+        $stmt = $this->prepareStatement($sql);
+        if (!$stmt) {
+            return;
+        }
+
         $stmt->execute(array(
             ':user_id' => $payload['user_id'],
             ':username' => $payload['username'] ?? '',
@@ -333,7 +392,11 @@ class ServerModes_Database
 
         $sql .= ' ORDER BY points DESC, created_at ASC LIMIT :limit';
 
-        $stmt = $this->pdo->prepare($sql);
+        $stmt = $this->prepareStatement($sql);
+        if (!$stmt) {
+            return array();
+        }
+
         foreach ($params as $key => $value) {
             $stmt->bindValue($key, $value);
         }
@@ -349,10 +412,35 @@ class ServerModes_Database
             return array();
         }
 
-        $stmt = $this->pdo->query('SELECT DISTINCT layout FROM prism_drift_scores WHERE layout <> "" ORDER BY layout ASC');
+        $stmt = $this->prepareStatement('SELECT DISTINCT layout FROM prism_drift_scores WHERE layout <> "" ORDER BY layout ASC');
+        if (!$stmt) {
+            return array();
+        }
+
+        $stmt->execute();
         $rows = $stmt->fetchAll(PDO::FETCH_COLUMN, 0);
 
         return is_array($rows) ? $rows : array();
+    }
+
+    private function prepareStatement(string $sql): ?PDOStatement
+    {
+        if (!$this->ensureConnection()) {
+            return null;
+        }
+
+        $cacheKey = md5($sql);
+
+        if (!isset($this->statementCache[$cacheKey])) {
+            try {
+                $this->statementCache[$cacheKey] = $this->pdo->prepare($sql);
+            } catch (PDOException $e) {
+                console('serverModes: failed to prepare statement - ' . $e->getMessage());
+                return null;
+            }
+        }
+
+        return $this->statementCache[$cacheKey];
     }
 
     private function ensureSchema(): void
@@ -459,6 +547,7 @@ class ServerModes_Database
         $options = array(
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES => false,
         );
 
         if (is_string($raw)) {
