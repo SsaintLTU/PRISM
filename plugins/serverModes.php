@@ -189,6 +189,17 @@ class serverModes extends Plugins
         return PLUGIN_HANDLED;
     }
 
+    public function MsgToUCID(int $ucid, string $message, int $sound = SND_SILENT, ?int $hostId = null): void
+    {
+        $mtc = IS_MTC();
+
+        if ($sound !== SND_SILENT) {
+            $mtc->Sound($sound);
+        }
+
+        $mtc->UCID($ucid)->Text($message)->Send($hostId ?? $this->getCurrentHostId());
+    }
+
     public function commandAddFriend($cmd, $ucid, $packet = null)
     {
         if (!$this->enabled) {
