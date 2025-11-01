@@ -464,11 +464,19 @@ class ServerModes_RaceSystems
         $line1 = sprintf('^7Potential ^3%d ^8| ^7Class ^3%s ^8| ^7Car ^3%s ^8| ^7Best ^3%s', $potential, $class ?: '-', $car ?: '-', $bestText);
         $line2 = sprintf('^7First ^3%s ^8| ^7Forced ^3%s ^8| ^7Qual %s', $this->firstClass ?: '-', $forced, $qualRemaining > 0 ? sprintf('^3%ds', $qualRemaining) : '^8-');
 
-        $button1 = new Button($ucid, 'RaceHudMain', self::HUD_GROUP);
-        $button1->L(0)->T(0)->W(200)->H(4)->BStyle(ISB_DARK | ISB_LEFT)->Text($line1)->Send();
+        $button1 = ButtonManager::getButtonForKey($ucid, 'RaceHudMain');
+        if ($button1 === null) {
+            $button1 = new Button($ucid, 'RaceHudMain', self::HUD_GROUP);
+            $button1->L(0)->T(0)->W(200)->H(4)->BStyle(ISB_DARK | ISB_LEFT);
+        }
+        $button1->Text($line1)->Send();
 
-        $button2 = new Button($ucid, 'RaceHudInfo', self::HUD_GROUP);
-        $button2->L(0)->T(4)->W(200)->H(4)->BStyle(ISB_DARK | ISB_LEFT)->Text($line2)->Send();
+        $button2 = ButtonManager::getButtonForKey($ucid, 'RaceHudInfo');
+        if ($button2 === null) {
+            $button2 = new Button($ucid, 'RaceHudInfo', self::HUD_GROUP);
+            $button2->L(0)->T(4)->W(200)->H(4)->BStyle(ISB_DARK | ISB_LEFT);
+        }
+        $button2->Text($line2)->Send();
     }
 
     private function triggerClassPromotion(array $player): void

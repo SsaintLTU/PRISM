@@ -242,8 +242,12 @@ class ServerModes_DriftSystems
         $best = number_format((float)($drift['best_combo'] ?? 0.0), 0, '.', ' ');
 
         $line = sprintf('^7Drift ^3%s ^8| ^7Combo ^3%s ^8| ^7Best ^3%s', $points, $combo, $best);
-        $button = new Button($ucid, 'DriftHudMain', self::HUD_GROUP);
-        $button->L(0)->T(0)->W(200)->H(4)->BStyle(ISB_DARK | ISB_LEFT)->Text($line)->Send();
+        $button = ButtonManager::getButtonForKey($ucid, 'DriftHudMain');
+        if ($button === null) {
+            $button = new Button($ucid, 'DriftHudMain', self::HUD_GROUP);
+            $button->L(0)->T(0)->W(200)->H(4)->BStyle(ISB_DARK | ISB_LEFT);
+        }
+        $button->Text($line)->Send();
 
         $angle = (float)($drift['last_angle'] ?? 0.0);
         $speed = (float)($drift['last_speed'] ?? 0.0);
@@ -251,8 +255,12 @@ class ServerModes_DriftSystems
         $gauge = $this->buildGauge($angle, $threshold, 22);
         $angleLine = sprintf('^7Angle ^3%02.0f° ^8%s ^7Speed ^3%02.0f ^8km/h', $angle, $gauge, $speed);
 
-        $gaugeButton = new Button($ucid, 'DriftHudGauge', self::HUD_GROUP);
-        $gaugeButton->L(0)->T(4)->W(200)->H(4)->BStyle(ISB_DARK | ISB_LEFT)->Text($angleLine)->Send();
+        $gaugeButton = ButtonManager::getButtonForKey($ucid, 'DriftHudGauge');
+        if ($gaugeButton === null) {
+            $gaugeButton = new Button($ucid, 'DriftHudGauge', self::HUD_GROUP);
+            $gaugeButton->L(0)->T(4)->W(200)->H(4)->BStyle(ISB_DARK | ISB_LEFT);
+        }
+        $gaugeButton->Text($angleLine)->Send();
 
         if (!empty($drift['ui']['visible'])) {
             $this->renderLeaderboard($player, $ucid);
