@@ -4,6 +4,7 @@ class ServerModes_VehicleMods
     private serverModes $plugin;
     private ServerModes_Database $database;
     private array $config;
+    private ?ServerModes_DiscordBridge $discord;
 
     private array $modsByCode = array();
     private array $modsByHex = array();
@@ -12,11 +13,12 @@ class ServerModes_VehicleMods
     private int $lastUpdated = 0;
     private int $nextRefresh = 0;
 
-    public function __construct(serverModes $plugin, ServerModes_Database $database, array $config = array())
+    public function __construct(serverModes $plugin, ServerModes_Database $database, array $config = array(), ?ServerModes_DiscordBridge $discord = null)
     {
         $this->plugin = $plugin;
         $this->database = $database;
         $this->config = $config;
+        $this->discord = $discord;
     }
 
     public function bootstrap(): void
@@ -355,6 +357,11 @@ class ServerModes_VehicleMods
 
     private function sendDiscordEmbed(array $player, array $mod): void
     {
+        if ($this->discord && $this->discord->isActive()) {
+            $this->discord->announceVehiclePurchase($player, $mod);
+            return;
+        }
+
         $webhook = trim($this->config['discord_webhook'] ?? '');
         if ($webhook === '') {
             return;
@@ -395,6 +402,7 @@ class ServerModes_VehicleMods
 
         $payload = array(
             'username' => $username,
+            'allowed_mentions' => array('parse' => array()),
             'embeds' => array(array(
                 'title' => sprintf('%s purchased %s', $playerName, $mod['display_name']),
                 'description' => sprintf('Say hello to %s\'s new ride!', $playerName),

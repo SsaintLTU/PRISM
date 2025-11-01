@@ -7,6 +7,7 @@ class ServerModes_CruiseSystems
     private const REGITRA_GROUP = 'CruiseRegitra';
     private const AFK_GROUP = 'CruiseAfk';
     private const DAILY_GROUP = 'CruiseDaily';
+    private const GARAGE_STATUS_GROUP = 'CruiseGarageStatus';
     public const POLICE_GROUP = 'CruisePolice';
 
     private serverModes $plugin;
@@ -90,6 +91,7 @@ class ServerModes_CruiseSystems
         ButtonManager::removeButtonsByGroup($ucid, self::POLICE_GROUP);
         ButtonManager::removeButtonsByGroup($ucid, self::AFK_GROUP);
         ButtonManager::removeButtonsByGroup($ucid, self::DAILY_GROUP);
+        ButtonManager::removeButtonsByGroup($ucid, self::GARAGE_STATUS_GROUP);
         unset($this->hudRendered[$ucid]);
         $this->removeAfkQueueEntry($ucid);
     }
@@ -186,6 +188,8 @@ class ServerModes_CruiseSystems
 
             $this->updateJobProgress($player, $deltaKm);
         }
+
+        $this->rewardSafeDriving($player, $deltaKm, $speedKph);
 
         if ($deltaKm > 0.0 || $speedKph > 1.0) {
             $state['telemetry']['last_move'] = time();
@@ -1007,6 +1011,112 @@ class ServerModes_CruiseSystems
         }
     }
 
+    public function handleHlvcViolation(array &$player, IS_HLV $packet): void
+    {
+        $this->initialisePlayerState($player);
+
+        $reasons = array(
+            0 => array('label' => 'Grounded', 'penalty' => -6.0),
+            1 => array('label' => 'Wall contact', 'penalty' => -12.0),
+            4 => array('label' => 'Pit speeding', 'penalty' => -10.0),
+            5 => array('label' => 'Out of bounds', 'penalty' => -15.0),
+        );
+
+        $meta = $reasons[$packet->HLVC] ?? array('label' => 'HLVC violation', 'penalty' => -8.0);
+        $this->applySafetyEvent($player, $meta['penalty'], 'hlvc', array('reason' => $meta['label']));
+    }
+
+    public function handleVehicleContact(array &$player, CarContact $contact, float $closingSpeed, ?string $otherName = null): void
+    {
+        $this->initialisePlayerState($player);
+
+        $speedKph = max(0.0, $closingSpeed * 3.6);
+        if ($speedKph < 5.0) {
+            return;
+        }
+
+        $severity = $speedKph / 2.5;
+        if ($speedKph > 40.0) {
+            $severity += ($speedKph - 40.0) / 1.8;
+        }
+        $penalty = -min(45.0, max(3.0, $severity));
+
+        $context = array(
+            'speed_kph' => $speedKph,
+        );
+        if ($otherName !== null && $otherName !== '') {
+            $context['other'] = $otherName;
+        }
+
+        $this->applySafetyEvent($player, $penalty, 'contact', $context);
+    }
+
+    public function handleObjectHit(array &$player, IS_OBH $packet): void
+    {
+        $this->initialisePlayerState($player);
+
+        $speed = isset($packet->C->Speed) ? (float)$packet->C->Speed * 3.6 : 0.0;
+        if ($speed < 8.0) {
+            return;
+        }
+
+        $isLayout = ($packet->OBHFlags & OBH_LAYOUT) !== 0;
+        $penalty = -min(35.0, max(5.0, ($speed / 3.2) + ($isLayout ? 5.0 : 8.0)));
+
+        $context = array(
+            'speed_kph' => $speed,
+            'layout' => $isLayout,
+        );
+
+        $this->applySafetyEvent($player, $penalty, 'object', $context);
+    }
+
+    public function handleInterfaceMode(array &$player, IS_CIM $packet): void
+    {
+        $this->initialisePlayerState($player);
+
+        if (!isset($player['state']['ui']['garage_status']) || !is_array($player['state']['ui']['garage_status'])) {
+            $player['state']['ui']['garage_status'] = array('visible' => false, 'text' => '');
+        }
+
+        $visible = $packet->Mode === CIM_GARAGE && $packet->SubMode === GRG_INFO;
+        $player['state']['ui']['garage_status']['visible'] = $visible;
+
+        if ($visible) {
+            $this->updateGarageStatus($player, true);
+        } else {
+            $player['state']['ui']['garage_status']['text'] = '';
+            $this->hideGarageStatus($player['ucid']);
+        }
+    }
+
+    public function handleCarSelection(array &$player, IS_SLC $packet): void
+    {
+        $this->initialisePlayerState($player);
+
+        $car = strtoupper(trim($packet->CName));
+        $state =& $player['state'];
+        $changed = false;
+
+        if ($car !== '' && ($state['garage']['active_car'] ?? '') !== $car) {
+            $state['garage']['active_car'] = $car;
+            $changed = true;
+        }
+
+        if ($car !== '' && !isset($state['garage']['vehicles'][$car])) {
+            $state['garage']['vehicles'][$car] = $this->createVehicleRecord();
+            $changed = true;
+        }
+
+        if ($changed) {
+            $this->markStateDirty($player);
+        }
+
+        if (!empty($state['ui']['garage_status']['visible'])) {
+            $this->updateGarageStatus($player, true);
+        }
+    }
+
     public function showGarage(int $ucid): void
     {
         if (!$this->active) {
@@ -1788,6 +1898,7 @@ class ServerModes_CruiseSystems
             ButtonManager::removeButtonsByGroup($ucid, self::POLICE_GROUP);
             ButtonManager::removeButtonsByGroup($ucid, self::AFK_GROUP);
             ButtonManager::removeButtonsByGroup($ucid, self::DAILY_GROUP);
+            ButtonManager::removeButtonsByGroup($ucid, self::GARAGE_STATUS_GROUP);
         }
         $this->hudRendered = array();
         $this->afkQueue = array();
@@ -1874,6 +1985,10 @@ class ServerModes_CruiseSystems
                 'safety_points' => 500,
                 'wanted_level' => 0,
                 'warnings' => 0,
+                'incident_points' => 0.0,
+                'incidents' => array(),
+                'last_incident_at' => 0,
+                'safety_progress_km' => 0.0,
             ),
             'telemetry' => array(
                 'speed' => 0.0,
@@ -1888,6 +2003,10 @@ class ServerModes_CruiseSystems
                     'left' => 4,
                     'top' => 120,
                     'row_keys' => array(),
+                ),
+                'garage_status' => array(
+                    'visible' => false,
+                    'text' => '',
                 ),
             ),
             'afk' => array(
@@ -2487,6 +2606,202 @@ class ServerModes_CruiseSystems
             return $a['distance'] <=> $b['distance'];
         });
         return $results;
+    }
+
+    private function rewardSafeDriving(array &$player, float $deltaKm, float $speedKph): void
+    {
+        if (!$this->active || $deltaKm <= 0.0 || $speedKph < 15.0) {
+            return;
+        }
+
+        $this->initialisePlayerState($player);
+        $state =& $player['state'];
+        $police =& $state['police'];
+
+        $threshold = max(0.5, (float)($this->config['safety_reward_km'] ?? 5.0));
+        $reward = (float)($this->config['safety_reward_points'] ?? 3.0);
+        if ($reward <= 0.0) {
+            return;
+        }
+
+        $police['safety_progress_km'] = ($police['safety_progress_km'] ?? 0.0) + $deltaKm;
+
+        $cooldown = max(0, (int)($this->config['safety_reward_cooldown'] ?? 120));
+        $lastIncident = (int)($police['last_incident_at'] ?? 0);
+        if ($cooldown > 0 && $lastIncident > 0 && (time() - $lastIncident) < $cooldown) {
+            return;
+        }
+
+        while ($police['safety_progress_km'] >= $threshold) {
+            $police['safety_progress_km'] -= $threshold;
+            $this->applySafetyEvent($player, $reward, 'clean', array('distance' => $threshold));
+        }
+    }
+
+    private function applySafetyEvent(array &$player, float $delta, string $type, array $context = array(), bool $notify = true): void
+    {
+        if ($delta == 0.0) {
+            return;
+        }
+
+        $this->adjustSafetyPoints($player, $delta);
+
+        $state =& $player['state'];
+        $police =& $state['police'];
+
+        $police['incident_points'] = ($police['incident_points'] ?? 0.0) + abs($delta);
+        if (!isset($police['incidents']) || !is_array($police['incidents'])) {
+            $police['incidents'] = array();
+        }
+
+        $entry = array(
+            'time' => time(),
+            'points' => $delta,
+            'type' => $type,
+            'context' => $context,
+        );
+        array_unshift($police['incidents'], $entry);
+        $police['incidents'] = array_slice($police['incidents'], 0, 20);
+
+        if ($delta < 0) {
+            $police['last_incident_at'] = time();
+            $police['safety_progress_km'] = 0.0;
+        }
+
+        if (!empty($state['ui']['garage_status']['visible'])) {
+            $this->updateGarageStatus($player, true);
+        }
+
+        $this->markStateDirty($player);
+
+        if ($notify && ($player['ucid'] ?? 0) > 0) {
+            $message = $this->formatSafetyMessage($delta, $type, $context, $player);
+            if ($message !== '') {
+                $this->sendMessage($player['ucid'], $message);
+            }
+        }
+    }
+
+    private function updateGarageStatus(array &$player, bool $force = false): void
+    {
+        $ucid = $player['ucid'] ?? 0;
+        if ($ucid <= 0) {
+            return;
+        }
+
+        $state =& $player['state'];
+        $ui =& $state['ui']['garage_status'];
+        if (!is_array($ui)) {
+            $ui = array('visible' => false, 'text' => '');
+        }
+
+        if (!$force && empty($ui['visible'])) {
+            return;
+        }
+
+        $points = (float)($state['police']['safety_points'] ?? 500);
+        $stars = $this->formatStars($points);
+        $history = $state['police']['incidents'] ?? array();
+        $summary = !empty($history) ? $this->describeIncidentForUi($history[0]) : '^2None';
+
+        $text = sprintf('^7Safety:^3 %.0f ^8| %s', $points, $stars) . "\n" . '^7Last:^8 ' . $summary;
+
+        if (!$force && ($ui['text'] ?? '') === $text) {
+            return;
+        }
+
+        $button = ButtonManager::getButtonForKey($ucid, 'GarageSafety');
+        if ($button === null || $button->group() !== self::GARAGE_STATUS_GROUP) {
+            $button = new Button($ucid, 'GarageSafety', self::GARAGE_STATUS_GROUP);
+        }
+
+        $button->Inst(INST_ALWAYS_ON)
+            ->L(4)
+            ->T(184)
+            ->W(120)
+            ->H(8)
+            ->BStyle(ISB_DARK | ISB_LEFT)
+            ->Text($text)
+            ->Send();
+
+        $ui['text'] = $text;
+    }
+
+    private function hideGarageStatus(int $ucid): void
+    {
+        ButtonManager::removeButtonsByGroup($ucid, self::GARAGE_STATUS_GROUP);
+    }
+
+    private function formatSafetyMessage(float $delta, string $type, array $context, array $player): string
+    {
+        $amount = number_format(abs($delta), 1);
+        $prefix = $delta >= 0 ? '^2Safety +' : '^1Safety -';
+        $reason = '';
+
+        switch ($type) {
+            case 'contact':
+                $reason = 'vehicle contact';
+                if (!empty($context['other'])) {
+                    $reason .= ' with ^3' . $context['other'];
+                }
+                if (!empty($context['speed_kph'])) {
+                    $reason .= sprintf(' (%.0f km/h)', $context['speed_kph']);
+                }
+                break;
+            case 'object':
+                $reason = !empty($context['layout']) ? 'layout object hit' : 'object hit';
+                if (!empty($context['speed_kph'])) {
+                    $reason .= sprintf(' (%.0f km/h)', $context['speed_kph']);
+                }
+                break;
+            case 'hlvc':
+                $reason = $context['reason'] ?? 'HLVC violation';
+                break;
+            case 'clean':
+                $distance = $context['distance'] ?? null;
+                $reason = $distance ? sprintf('clean driving (%.1f km)', $distance) : 'clean driving';
+                break;
+            default:
+                $reason = ucfirst($type);
+                break;
+        }
+
+        $stars = $this->formatStars($player['state']['police']['safety_points'] ?? 500);
+
+        return sprintf('%s%s ^7- %s ^7| Stars:%s', $prefix, $amount, $reason, $stars);
+    }
+
+    private function describeIncidentForUi(array $entry): string
+    {
+        $delta = (float)($entry['points'] ?? 0.0);
+        $type = (string)($entry['type'] ?? 'event');
+        $context = $entry['context'] ?? array();
+
+        $sign = $delta >= 0 ? '^2+' : '^1-';
+        $amount = number_format(abs($delta), 0);
+
+        switch ($type) {
+            case 'contact':
+                $label = 'Contact';
+                if (!empty($context['other'])) {
+                    $label .= ' ' . $context['other'];
+                }
+                break;
+            case 'object':
+                $label = !empty($context['layout']) ? 'Layout hit' : 'Object hit';
+                break;
+            case 'hlvc':
+                $label = $context['reason'] ?? 'HLVC';
+                break;
+            case 'clean':
+                $label = 'Clean drive';
+                break;
+            default:
+                $label = ucfirst($type);
+                break;
+        }
+
+        return sprintf('%s%s %s', $sign, $amount, $label);
     }
 
     private function issueFine(int $officerUcid, int $targetUcid, float $amount): void
