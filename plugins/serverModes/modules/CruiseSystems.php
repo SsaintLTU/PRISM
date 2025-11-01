@@ -124,13 +124,16 @@ class ServerModes_CruiseSystems
         if ($price <= 0.0) {
             $this->hideVehiclePriceButton($ucid);
 
-            $name = $mod['display_name'] ?? ($mod['name'] ?? $carCode);
-            if ($name === '') {
-                $name = $carCode;
+            $label = $this->vehicleMods->describeVehicle($carCode);
+            if ($label === '') {
+                $label = $carCode;
             }
-            $plainName = preg_replace('/\^[0-9A-Z]/i', '', $name);
+            $plainName = preg_replace('/\^[0-9A-Z]/i', '', $label);
             if ($plainName === null || $plainName === '') {
-                $plainName = $carCode;
+                $plainName = $this->vehicleMods->formatVehicleCode($carCode);
+                if ($plainName === '') {
+                    $plainName = $label;
+                }
             }
 
             $errorMessage = sprintf('^1Price for ^3%s ^1is not set. You cannot leave the pits.', $plainName);
@@ -789,6 +792,15 @@ class ServerModes_CruiseSystems
             $vehicle =& $state['garage']['vehicles'][$car];
         }
 
+        $codeLabel = $this->vehicleMods->formatVehicleCode($car);
+        if ($codeLabel === '') {
+            $codeLabel = $car;
+        }
+        $carLabel = $this->vehicleMods->describeVehicle($car);
+        if ($carLabel === '') {
+            $carLabel = $codeLabel;
+        }
+
         ButtonManager::removeButtonsByGroup($ucid, self::REGITRA_GROUP);
 
         $width = 70;
@@ -802,12 +814,17 @@ class ServerModes_CruiseSystems
         $plate = $vehicle['plate'] ?? '---:---';
         $insuranceUntil = $vehicle['insurance_until'] ?? 0;
         $insuranceLabel = $insuranceUntil > time() ? '^2Valid' : '^1Expired';
-        $modLabel = $vehicle['mod']['name'] ?? $car;
+        $modLabel = trim((string)($vehicle['mod']['name'] ?? ''));
         if ($modLabel === '') {
-            $modLabel = $car;
+            $modLabel = $carLabel;
         }
 
-        $this->drawButton($ucid, 'RegitraCar', self::REGITRA_GROUP, $left + 2, $top + 11, $width - 4, 6, '^7Car: ^3' . $car, ISB_DARK | ISB_LEFT);
+        $carText = sprintf('^7Car: ^3%s', $carLabel);
+        if ($codeLabel !== '' && strcasecmp($carLabel, $codeLabel) !== 0) {
+            $carText .= sprintf(' ^8(%s)', $codeLabel);
+        }
+
+        $this->drawButton($ucid, 'RegitraCar', self::REGITRA_GROUP, $left + 2, $top + 11, $width - 4, 6, $carText, ISB_DARK | ISB_LEFT);
         $this->drawButton($ucid, 'RegitraMod', self::REGITRA_GROUP, $left + 2, $top + 19, $width - 4, 6, '^7Vehicle: ^3' . $modLabel, ISB_DARK | ISB_LEFT);
         $this->drawButton($ucid, 'RegitraPlate', self::REGITRA_GROUP, $left + 2, $top + 27, $width - 4, 6, '^7Plate: ^3' . $plate, ISB_DARK | ISB_LEFT);
         $this->drawButton($ucid, 'RegitraInsurance', self::REGITRA_GROUP, $left + 2, $top + 35, $width - 4, 6, '^7Insurance: ' . $insuranceLabel, ISB_DARK | ISB_LEFT);
@@ -1015,9 +1032,27 @@ class ServerModes_CruiseSystems
         $safety = (int)($target['state']['police']['safety_points'] ?? 500);
         $wanted = (int)($target['state']['police']['wanted_level'] ?? 0);
 
+        $activeCode = trim((string)($target['state']['garage']['active_car'] ?? ''));
+        $activeLabel = 'N/A';
+        if ($activeCode !== '') {
+            $codeLabel = $this->vehicleMods->formatVehicleCode($activeCode);
+            if ($codeLabel === '') {
+                $codeLabel = $activeCode;
+            }
+            $carLabel = $this->vehicleMods->describeVehicle($activeCode);
+            if ($carLabel === '') {
+                $carLabel = $codeLabel;
+            }
+
+            $activeLabel = $carLabel;
+            if ($codeLabel !== '' && strcasecmp($carLabel, $codeLabel) !== 0) {
+                $activeLabel .= sprintf(' ^8(%s)', $codeLabel);
+            }
+        }
+
         $infoLines = array(
             '^7Name: ^3' . $targetClient->PName,
-            '^7Car: ^3' . ($target['state']['garage']['active_car'] ?? 'N/A'),
+            '^7Car: ^3' . $activeLabel,
             '^7Cash: ^3' . $cash,
             '^7Safety: ^3' . $safety,
             '^7Wanted level: ^3' . $wanted,
@@ -1166,11 +1201,18 @@ class ServerModes_CruiseSystems
         foreach ($vehicles as $code => $vehicle) {
             $plate = $vehicle['plate'] ?? '---:---';
             $distance = $vehicle['distance'] ?? 0.0;
-            $label = $vehicle['mod']['name'] ?? $code;
+            $label = trim((string)($vehicle['mod']['name'] ?? ''));
+            if ($label === '') {
+                $label = $this->vehicleMods->describeVehicle($code);
+            }
             if ($label === '') {
                 $label = $code;
             }
-            $text = sprintf('^3%s ^7(%s) ^8| ^7Plate:^3 %s ^8| ^7%.2f km', $label, $code, $plate, $distance);
+            $codeLabel = $this->vehicleMods->formatVehicleCode($code);
+            if ($codeLabel === '') {
+                $codeLabel = $code;
+            }
+            $text = sprintf('^3%s ^7(%s) ^8| ^7Plate:^3 %s ^8| ^7%.2f km', $label, $codeLabel, $plate, $distance);
             $this->drawButton($ucid, 'GarageItem' . $row, self::REGITRA_GROUP, $left + 2, $top + 10 + ($row * 6), $width - 4, 5, $text, ISB_DARK | ISB_LEFT);
             $row++;
         }

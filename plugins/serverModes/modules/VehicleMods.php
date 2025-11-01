@@ -204,6 +204,94 @@ class ServerModes_VehicleMods
         return $this->normaliseCarCode($value);
     }
 
+    public function formatVehicleCode(string $value): string
+    {
+        $value = trim((string)$value);
+        if ($value === '') {
+            return '';
+        }
+
+        $normalized = $this->normaliseCarCode($value);
+        if ($normalized === '') {
+            $normalized = strtoupper($value);
+        }
+
+        if (preg_match('/^[0-9A-F]{2,}$/', $normalized)) {
+            $trimmed = ltrim($normalized, '0');
+            if ($trimmed === '') {
+                return '0';
+            }
+            return $trimmed;
+        }
+
+        return $normalized;
+    }
+
+    public function describeVehicle(string $carCode): string
+    {
+        $carCode = trim((string)$carCode);
+        if ($carCode === '') {
+            return '';
+        }
+
+        $mod = $this->getMod($carCode);
+        if ($mod !== null) {
+            $candidates = array(
+                $mod['display_name'] ?? '',
+                $mod['short_name'] ?? '',
+                $mod['car_code'] ?? '',
+                $mod['id'] ?? '',
+            );
+
+            foreach ($candidates as $candidate) {
+                $candidate = trim((string)$candidate);
+                if ($candidate !== '') {
+                    return $candidate;
+                }
+            }
+        }
+
+        $decoded = $this->decodeVehicleCode($carCode);
+        if ($decoded !== '') {
+            return $decoded;
+        }
+
+        $formatted = $this->formatVehicleCode($carCode);
+        if ($formatted !== '') {
+            return $formatted;
+        }
+
+        return strtoupper($carCode);
+    }
+
+    private function decodeVehicleCode(string $carCode): string
+    {
+        $carCode = strtoupper(trim((string)$carCode));
+        if ($carCode === '' || (strlen($carCode) % 2) !== 0) {
+            return '';
+        }
+
+        if (!preg_match('/^[0-9A-F]+$/', $carCode)) {
+            return '';
+        }
+
+        $raw = @hex2bin($carCode);
+        if ($raw === false) {
+            return '';
+        }
+
+        $raw = trim($raw, "\0 ");
+        if ($raw === '') {
+            return '';
+        }
+
+        if (!preg_match('/^[\x20-\x7E]+$/', $raw)) {
+            return '';
+        }
+
+        return strtoupper($raw);
+    }
+
     private function reloadFromDatabase(): void
     {
         $rows = $this->database->fetchVehicleMods();
