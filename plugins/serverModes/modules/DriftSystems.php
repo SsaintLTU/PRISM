@@ -242,12 +242,8 @@ class ServerModes_DriftSystems
         $best = number_format((float)($drift['best_combo'] ?? 0.0), 0, '.', ' ');
 
         $line = sprintf('^7Drift ^3%s ^8| ^7Combo ^3%s ^8| ^7Best ^3%s', $points, $combo, $best);
-        $button = ButtonManager::getButtonForKey($ucid, 'DriftHudMain');
-        if ($button === null) {
-            $button = new Button($ucid, 'DriftHudMain', self::HUD_GROUP);
-            $button->L(0)->T(0)->W(200)->H(4)->BStyle(ISB_DARK | ISB_LEFT);
-        }
-        $button->Text($line)->Send();
+        $button = $this->getButton($ucid, 'DriftHudMain', self::HUD_GROUP);
+        $button->L(0)->T(0)->W(200)->H(4)->BStyle(ISB_DARK | ISB_LEFT)->Text($line)->Send();
 
         $angle = (float)($drift['last_angle'] ?? 0.0);
         $speed = (float)($drift['last_speed'] ?? 0.0);
@@ -255,12 +251,8 @@ class ServerModes_DriftSystems
         $gauge = $this->buildGauge($angle, $threshold, 22);
         $angleLine = sprintf('^7Angle ^3%02.0f° ^8%s ^7Speed ^3%02.0f ^8km/h', $angle, $gauge, $speed);
 
-        $gaugeButton = ButtonManager::getButtonForKey($ucid, 'DriftHudGauge');
-        if ($gaugeButton === null) {
-            $gaugeButton = new Button($ucid, 'DriftHudGauge', self::HUD_GROUP);
-            $gaugeButton->L(0)->T(4)->W(200)->H(4)->BStyle(ISB_DARK | ISB_LEFT);
-        }
-        $gaugeButton->Text($angleLine)->Send();
+        $gaugeButton = $this->getButton($ucid, 'DriftHudGauge', self::HUD_GROUP);
+        $gaugeButton->L(0)->T(4)->W(200)->H(4)->BStyle(ISB_DARK | ISB_LEFT)->Text($angleLine)->Send();
 
         if (!empty($drift['ui']['visible'])) {
             $this->renderLeaderboard($player, $ucid);
@@ -281,34 +273,36 @@ class ServerModes_DriftSystems
         $top = max(10, min(IS_Y_MAX - 50, (int)($ui['top'] ?? 30)));
         $height = 14 + (max(1, count($rows)) * 6) + 8;
 
-        $background = new Button($ucid, 'DriftBoardBG', self::BOARD_GROUP);
+        $background = $this->getButton($ucid, 'DriftBoardBG', self::BOARD_GROUP);
         $background->L($left)->T($top)->W(80)->H($height)->BStyle(ISB_DARK)->Text('')->Send();
 
-        $title = new Button($ucid, 'DriftBoardTitle', self::BOARD_GROUP);
+        $title = $this->getButton($ucid, 'DriftBoardTitle', self::BOARD_GROUP);
         $title->L($left + 2)->T($top + 2)->W(76)->H(6)->BStyle(ISB_DARK | ISB_YELLOW)->Text(sprintf('^7Top %s - %s', $periodLabel, $displayLayout))->Send();
 
-        $layoutPrev = new Button($ucid, 'DriftLayoutPrev', self::BOARD_GROUP);
+        $layoutPrev = $this->getButton($ucid, 'DriftLayoutPrev', self::BOARD_GROUP);
         $layoutPrev->L($left + 2)->T($top + 9)->W(6)->H(5)->BStyle(ISB_DARK | ISB_CLICK)->Text('<')->registerOnClick($this->plugin, 'handleDriftButton', array($ucid, 'layout_prev'));
         $layoutPrev->Send();
 
-        $layoutNext = new Button($ucid, 'DriftLayoutNext', self::BOARD_GROUP);
+        $layoutNext = $this->getButton($ucid, 'DriftLayoutNext', self::BOARD_GROUP);
         $layoutNext->L($left + 72)->T($top + 9)->W(6)->H(5)->BStyle(ISB_DARK | ISB_CLICK)->Text('>')->registerOnClick($this->plugin, 'handleDriftButton', array($ucid, 'layout_next'));
         $layoutNext->Send();
 
-        $layoutLabel = new Button($ucid, 'DriftLayoutLabel', self::BOARD_GROUP);
+        $layoutLabel = $this->getButton($ucid, 'DriftLayoutLabel', self::BOARD_GROUP);
         $layoutLabel->L($left + 10)->T($top + 9)->W(60)->H(5)->BStyle(ISB_DARK | ISB_LEFT)->Text('^7Layout: ^3' . $displayLayout)->Send();
 
-        $periodButton = new Button($ucid, 'DriftPeriod', self::BOARD_GROUP);
+        $periodButton = $this->getButton($ucid, 'DriftPeriod', self::BOARD_GROUP);
         $periodButton->L($left + 2)->T($top + 15)->W(40)->H(5)->BStyle(ISB_DARK | ISB_CLICK | ISB_LEFT)->Text('^7Period: ^3' . $periodLabel)->registerOnClick($this->plugin, 'handleDriftButton', array($ucid, 'period_next'));
         $periodButton->Send();
 
-        $toggleButton = new Button($ucid, 'DriftPanelToggle', self::BOARD_GROUP);
+        $toggleButton = $this->getButton($ucid, 'DriftPanelToggle', self::BOARD_GROUP);
         $toggleButton->L($left + 44)->T($top + 15)->W(34)->H(5)->BStyle(ISB_DARK | ISB_CLICK | ISB_LEFT)->Text('^7Hide')->registerOnClick($this->plugin, 'handleDriftButton', array($ucid, 'panel_toggle'));
         $toggleButton->Send();
 
+        $activeRowKeys = array();
         if (empty($rows)) {
-            $rowButton = new Button($ucid, 'DriftRowEmpty', self::BOARD_GROUP);
+            $rowButton = $this->getButton($ucid, 'DriftRowEmpty', self::BOARD_GROUP);
             $rowButton->L($left + 2)->T($top + 22)->W(76)->H(5)->BStyle(ISB_DARK | ISB_LEFT)->Text('^8No runs recorded yet.')->Send();
+            $activeRowKeys[] = 'DriftRowEmpty';
         } else {
             $rowIndex = 0;
             foreach ($rows as $row) {
@@ -317,27 +311,56 @@ class ServerModes_DriftSystems
                 $points = number_format((float)$row['points'], 0, '.', ' ');
                 $text = sprintf('^3%2d.^7 %s ^8%s pts', $rank, $name, $points);
 
-                $rowButton = new Button($ucid, 'DriftRow' . $rank, self::BOARD_GROUP);
+                $rowKey = 'DriftRow' . $rank;
+                $rowButton = $this->getButton($ucid, $rowKey, self::BOARD_GROUP);
                 $rowButton->L($left + 2)->T($top + 22 + ($rowIndex * 6))->W(76)->H(5)->BStyle(ISB_DARK | ISB_LEFT)->Text($text)->Send();
+                $activeRowKeys[] = $rowKey;
                 $rowIndex++;
             }
         }
 
-        $moveUp = new Button($ucid, 'DriftMoveUp', self::BOARD_GROUP);
+        $this->removeUnusedRowButtons($ucid, $activeRowKeys);
+
+        $moveUp = $this->getButton($ucid, 'DriftMoveUp', self::BOARD_GROUP);
         $moveUp->L($left + 30)->T($top + $height - 8)->W(6)->H(5)->BStyle(ISB_DARK | ISB_CLICK)->Text('^')->registerOnClick($this->plugin, 'handleDriftButton', array($ucid, 'panel_up'));
         $moveUp->Send();
 
-        $moveLeft = new Button($ucid, 'DriftMoveLeft', self::BOARD_GROUP);
+        $moveLeft = $this->getButton($ucid, 'DriftMoveLeft', self::BOARD_GROUP);
         $moveLeft->L($left + 22)->T($top + $height - 3)->W(6)->H(5)->BStyle(ISB_DARK | ISB_CLICK)->Text('<')->registerOnClick($this->plugin, 'handleDriftButton', array($ucid, 'panel_left'));
         $moveLeft->Send();
 
-        $moveDown = new Button($ucid, 'DriftMoveDown', self::BOARD_GROUP);
+        $moveDown = $this->getButton($ucid, 'DriftMoveDown', self::BOARD_GROUP);
         $moveDown->L($left + 30)->T($top + $height - 3)->W(6)->H(5)->BStyle(ISB_DARK | ISB_CLICK)->Text('v')->registerOnClick($this->plugin, 'handleDriftButton', array($ucid, 'panel_down'));
         $moveDown->Send();
 
-        $moveRight = new Button($ucid, 'DriftMoveRight', self::BOARD_GROUP);
+        $moveRight = $this->getButton($ucid, 'DriftMoveRight', self::BOARD_GROUP);
         $moveRight->L($left + 38)->T($top + $height - 3)->W(6)->H(5)->BStyle(ISB_DARK | ISB_CLICK)->Text('>')->registerOnClick($this->plugin, 'handleDriftButton', array($ucid, 'panel_right'));
         $moveRight->Send();
+    }
+
+    private function getButton(int $ucid, string $key, string $group): Button
+    {
+        $button = ButtonManager::getButtonForKey($ucid, $key);
+        if (!$button instanceof Button) {
+            $button = new Button($ucid, $key, $group);
+        }
+
+        return $button;
+    }
+
+    private function removeUnusedRowButtons(int $ucid, array $activeRowKeys): void
+    {
+        $existing = ButtonManager::getButtonsForGroup($ucid, self::BOARD_GROUP);
+        foreach ($existing as $button) {
+            if (!$button instanceof Button) {
+                continue;
+            }
+
+            $key = $button->key();
+            if (strpos($key, 'DriftRow') === 0 && !in_array($key, $activeRowKeys, true)) {
+                ButtonManager::removeButton($button);
+            }
+        }
     }
 
     private function initialisePlayer(array &$player): void
