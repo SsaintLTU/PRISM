@@ -86,6 +86,7 @@ class serverModes extends Plugins
         $this->registerPacket('onClientDisconnect', ISP_CNL);
         $this->registerPacket('onStateInfo', ISP_STA);
         $this->registerPacket('onPlayerJoinRace', ISP_NPL);
+        $this->registerPacket('onPlayerPits', ISP_PLP);
         $this->registerPacket('onPlayerLeaveRace', ISP_PLL);
         $this->registerPacket('onCarInfo', ISP_MCI);
         $this->registerPacket('onCarStateChange', ISP_CSC);
@@ -363,8 +364,20 @@ class serverModes extends Plugins
             return PLUGIN_CONTINUE;
         }
 
-        $this->plidMap[$NPL->PLID] = $NPL->UCID;
         $player =& $this->ensurePlayer($NPL->UCID);
+
+        if ($this->cruiseSystems->isActive()) {
+            $errorMessage = null;
+            if (!$this->cruiseSystems->handleJoinAttempt($player, $NPL, $errorMessage)) {
+                if ($errorMessage !== null) {
+                    $this->MsgToUCID($NPL->UCID, $errorMessage);
+                }
+                $this->rejectJoinRequest($NPL);
+                return PLUGIN_HANDLED;
+            }
+        }
+
+        $this->plidMap[$NPL->PLID] = $NPL->UCID;
         $player['positions'][$NPL->PLID] = null;
 
         if ($this->cruiseSystems->isActive()) {
@@ -394,6 +407,26 @@ class serverModes extends Plugins
         }
 
         $this->driftSystems->onPlayerJoinRace($player, $NPL);
+
+        return PLUGIN_CONTINUE;
+    }
+
+    public function onPlayerPits(IS_PLP $PLP)
+    {
+        if (!$this->enabled) {
+            return PLUGIN_CONTINUE;
+        }
+
+        if (!isset($this->plidMap[$PLP->PLID])) {
+            return PLUGIN_CONTINUE;
+        }
+
+        $ucid = $this->plidMap[$PLP->PLID];
+
+        if ($this->cruiseSystems->isActive() && isset($this->players[$ucid])) {
+            $player =& $this->players[$ucid];
+            $this->cruiseSystems->onPlayerPits($player);
+        }
 
         return PLUGIN_CONTINUE;
     }
@@ -801,6 +834,24 @@ class serverModes extends Plugins
     public function getCurrentTrack(): string
     {
         return $this->currentTrack;
+    }
+
+    private function rejectJoinRequest(IS_NPL $packet): void
+    {
+        $ucid = $packet->UCID;
+        if ($ucid <= 0) {
+            return;
+        }
+
+        $start = new ObjectInfo();
+        $start->Flags = 0x80;
+
+        IS_JRR()
+            ->UCID($ucid)
+            ->PLID(0)
+            ->JRRAction(JRR_REJECT)
+            ->StartPos($start)
+            ->Send();
     }
 
     private function processMovement(array &$player, int $plid, CompCar $info): void

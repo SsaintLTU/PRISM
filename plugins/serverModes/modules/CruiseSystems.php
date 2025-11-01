@@ -8,6 +8,7 @@ class ServerModes_CruiseSystems
     private const AFK_GROUP = 'CruiseAfk';
     private const DAILY_GROUP = 'CruiseDaily';
     public const POLICE_GROUP = 'CruisePolice';
+    private const PRICE_GROUP = 'CruisePrice';
 
     private serverModes $plugin;
     private ServerModes_VehicleMods $vehicleMods;
@@ -90,8 +91,55 @@ class ServerModes_CruiseSystems
         ButtonManager::removeButtonsByGroup($ucid, self::POLICE_GROUP);
         ButtonManager::removeButtonsByGroup($ucid, self::AFK_GROUP);
         ButtonManager::removeButtonsByGroup($ucid, self::DAILY_GROUP);
+        ButtonManager::removeButtonsByGroup($ucid, self::PRICE_GROUP);
         unset($this->hudRendered[$ucid]);
         $this->removeAfkQueueEntry($ucid);
+    }
+
+    public function handleJoinAttempt(array &$player, IS_NPL $packet, ?string &$errorMessage = null): bool
+    {
+        if (!$this->active) {
+            $errorMessage = null;
+            return true;
+        }
+
+        $this->initialisePlayerState($player);
+
+        $ucid = $player['ucid'] ?? 0;
+        if ($ucid <= 0) {
+            $errorMessage = null;
+            return true;
+        }
+
+        $carCode = trim($packet->CName);
+        if ($carCode === '') {
+            $this->hideVehiclePriceButton($ucid);
+            $errorMessage = null;
+            return true;
+        }
+
+        $mod = $this->vehicleMods->getMod($carCode);
+        $price = (float)($mod['price'] ?? 0.0);
+
+        if ($price <= 0.0) {
+            $this->hideVehiclePriceButton($ucid);
+
+            $name = $mod['display_name'] ?? ($mod['name'] ?? $carCode);
+            if ($name === '') {
+                $name = $carCode;
+            }
+            $plainName = preg_replace('/\^[0-9A-Z]/i', '', $name);
+            if ($plainName === null || $plainName === '') {
+                $plainName = $carCode;
+            }
+
+            $errorMessage = sprintf('^1Price for ^3%s ^1is not set. You cannot leave the pits.', $plainName);
+            return false;
+        }
+
+        $this->showVehiclePriceButton($ucid, $price);
+        $errorMessage = null;
+        return true;
     }
 
     public function onPlayerJoinRace(array &$player, IS_NPL $packet): void
@@ -135,6 +183,17 @@ class ServerModes_CruiseSystems
             $this->markStateDirty($player);
         }
 
+        if ($carCode !== '') {
+            $price = (float)($state['garage']['vehicles'][$carCode]['mod']['price'] ?? 0.0);
+            if ($price > 0.0) {
+                $this->showVehiclePriceButton($player['ucid'], $price);
+            } else {
+                $this->hideVehiclePriceButton($player['ucid']);
+            }
+        } else {
+            $this->hideVehiclePriceButton($player['ucid']);
+        }
+
         $this->evaluateJobEligibility($player);
     }
 
@@ -146,6 +205,11 @@ class ServerModes_CruiseSystems
 
         $this->initialisePlayerState($player);
 
+        $ucid = $player['ucid'] ?? null;
+        if ($ucid !== null) {
+            $this->hideVehiclePriceButton($ucid);
+        }
+
         if ($this->isJobActive($player)) {
             $this->cancelJob($player, '^1Job cancelled: you left the track.');
         }
@@ -154,6 +218,20 @@ class ServerModes_CruiseSystems
         $state['garage']['active_car'] = '';
         $state['garage']['active_skin'] = '';
         $this->markStateDirty($player);
+    }
+
+    public function onPlayerPits(array &$player): void
+    {
+        if (!$this->active) {
+            return;
+        }
+
+        $ucid = $player['ucid'] ?? null;
+        if ($ucid === null) {
+            return;
+        }
+
+        $this->hideVehiclePriceButton($ucid);
     }
 
     public function onMovementReward(array &$player, float $deltaKm, float $speedKph, float $earnedMoney, float $earnedXp, CompCar $info): void
@@ -1788,6 +1866,7 @@ class ServerModes_CruiseSystems
             ButtonManager::removeButtonsByGroup($ucid, self::POLICE_GROUP);
             ButtonManager::removeButtonsByGroup($ucid, self::AFK_GROUP);
             ButtonManager::removeButtonsByGroup($ucid, self::DAILY_GROUP);
+            ButtonManager::removeButtonsByGroup($ucid, self::PRICE_GROUP);
         }
         $this->hudRendered = array();
         $this->afkQueue = array();
@@ -1913,6 +1992,30 @@ class ServerModes_CruiseSystems
             'discord_announced' => false,
             'last_skin' => '',
         );
+    }
+
+    private function showVehiclePriceButton(int $ucid, float $price): void
+    {
+        $button = ButtonManager::getButtonForKey($ucid, 'VehiclePrice');
+        if ($button === null || $button->group() !== self::PRICE_GROUP) {
+            $button = new Button($ucid, 'VehiclePrice', self::PRICE_GROUP);
+        }
+
+        $text = sprintf('^7Price:^3 %s', $this->formatCurrency($price));
+
+        $button->L(IS_X_MAX - 36)
+            ->T(IS_Y_MIN + 2)
+            ->W(34)
+            ->H(6)
+            ->BStyle(ISB_DARK | ISB_LEFT)
+            ->Inst(INST_ALWAYS_ON)
+            ->Text($text)
+            ->Send();
+    }
+
+    private function hideVehiclePriceButton(int $ucid): void
+    {
+        ButtonManager::removeButtonsByGroup($ucid, self::PRICE_GROUP);
     }
 
     private function markStateDirty(array &$player): void

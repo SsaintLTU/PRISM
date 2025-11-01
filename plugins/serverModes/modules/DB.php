@@ -211,6 +211,8 @@ class ServerModes_Database
             return;
         }
 
+        $existingPrices = $this->getExistingVehicleModPrices();
+
         $this->pdo->beginTransaction();
         try {
             $this->pdo->exec('DELETE FROM prism_vehicle_mods');
@@ -224,6 +226,7 @@ class ServerModes_Database
             }
 
             foreach ($mods as $mod) {
+                $id = strtoupper($mod['id']);
                 $stmt->execute(array(
                     ':id' => $mod['id'],
                     ':short_name' => $mod['short_name'],
@@ -234,7 +237,7 @@ class ServerModes_Database
                     ':author' => $mod['author'],
                     ':power_kw' => $mod['power_kw'],
                     ':weight_kg' => $mod['weight_kg'],
-                    ':price' => $mod['price'],
+                    ':price' => $existingPrices[$id] ?? 0.0,
                     ':raw_json' => $mod['raw_json'],
                 ));
             }
@@ -244,6 +247,36 @@ class ServerModes_Database
             $this->pdo->rollBack();
             console('serverModes: failed to persist vehicle mod cache - ' . $e->getMessage());
         }
+    }
+
+    private function getExistingVehicleModPrices(): array
+    {
+        $prices = array();
+
+        if (!$this->ensureConnection()) {
+            return $prices;
+        }
+
+        $stmt = $this->prepareStatement('SELECT id, price FROM prism_vehicle_mods');
+        if (!$stmt) {
+            return $prices;
+        }
+
+        $stmt->execute();
+        $rows = $stmt->fetchAll();
+        if (!is_array($rows)) {
+            return $prices;
+        }
+
+        foreach ($rows as $row) {
+            $id = strtoupper(trim($row['id'] ?? ''));
+            if ($id === '') {
+                continue;
+            }
+            $prices[$id] = (float)($row['price'] ?? 0.0);
+        }
+
+        return $prices;
     }
 
     public function getLatestVehicleModTimestamp(): ?int

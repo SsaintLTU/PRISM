@@ -363,6 +363,12 @@ class ServerModes_VehicleMods
         $username = trim($this->config['discord_username'] ?? 'PRISM');
         $avatar = trim($this->config['discord_avatar'] ?? '');
         $playerName = $player['nickname'] ?? $player['username'] ?? 'Player';
+        $playerName = $this->stripLfsColours($playerName);
+
+        $displayName = $this->stripLfsColours($mod['display_name']);
+        $category = $this->stripLfsColours($mod['category']);
+        $author = $this->stripLfsColours($mod['author']);
+
         $code = $mod['short_name'] !== '' ? $mod['short_name'] : $mod['id'];
 
         $fields = array();
@@ -372,12 +378,12 @@ class ServerModes_VehicleMods
             'inline' => true,
         );
 
-        if ($mod['category'] !== '') {
-            $fields[] = array('name' => 'Class', 'value' => $mod['category'], 'inline' => true);
+        if ($category !== '') {
+            $fields[] = array('name' => 'Class', 'value' => $category, 'inline' => true);
         }
 
-        if ($mod['author'] !== '') {
-            $fields[] = array('name' => 'Author', 'value' => $mod['author'], 'inline' => true);
+        if ($author !== '') {
+            $fields[] = array('name' => 'Author', 'value' => $author, 'inline' => true);
         }
 
         if ($mod['power_kw'] > 0) {
@@ -396,7 +402,7 @@ class ServerModes_VehicleMods
         $payload = array(
             'username' => $username,
             'embeds' => array(array(
-                'title' => sprintf('%s purchased %s', $playerName, $mod['display_name']),
+                'title' => sprintf('%s purchased %s', $playerName, $displayName),
                 'description' => sprintf('Say hello to %s\'s new ride!', $playerName),
                 'color' => 0x3BA55D,
                 'timestamp' => gmdate('c'),
@@ -418,6 +424,19 @@ class ServerModes_VehicleMods
         ));
 
         @file_get_contents($webhook, false, $context);
+    }
+
+    private function stripLfsColours(string $text): string
+    {
+        $placeholder = "\x01";
+        $escaped = str_replace('^^', $placeholder, $text);
+
+        $stripped = preg_replace('/\^./', '', $escaped);
+        if ($stripped === null) {
+            $stripped = $escaped;
+        }
+
+        return str_replace($placeholder, '^', $stripped);
     }
 
     private function getCacheTtl(): int
