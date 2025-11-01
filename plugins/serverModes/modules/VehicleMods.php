@@ -196,7 +196,12 @@ class ServerModes_VehicleMods
 
     public function normaliseVehicleCode(string $value): string
     {
-        return $this->normalisePacketCarCode($value);
+        $value = $this->normalisePacketCarCode($value);
+        if ($value === '') {
+            return '';
+        }
+
+        return $this->normaliseCarCode($value);
     }
 
     private function reloadFromDatabase(): void

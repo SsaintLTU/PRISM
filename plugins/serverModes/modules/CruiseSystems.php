@@ -111,7 +111,7 @@ class ServerModes_CruiseSystems
             return true;
         }
 
-        $carCode = $this->vehicleMods->normalisePacketCarCode($packet->CName ?? '');
+        $carCode = $this->vehicleMods->normaliseVehicleCode($packet->CName ?? '');
         if ($carCode === '') {
             $this->hideVehiclePriceButton($ucid);
             $errorMessage = null;
@@ -151,7 +151,7 @@ class ServerModes_CruiseSystems
         $this->initialisePlayerState($player);
         $state =& $player['state'];
 
-        $carCode = $this->vehicleMods->normalisePacketCarCode($packet->CName ?? '');
+        $carCode = $this->vehicleMods->normaliseVehicleCode($packet->CName ?? '');
         $skin = trim($packet->SName);
         $changed = false;
 
@@ -1949,6 +1949,8 @@ class ServerModes_CruiseSystems
         }
 
         $player['state']['police']['officer'] = $this->isOfficer($player);
+
+        $this->normaliseGarageState($player);
     }
 
     private function defaultAccelerationState(): array
@@ -2037,6 +2039,126 @@ class ServerModes_CruiseSystems
             'discord_announced' => false,
             'last_skin' => '',
         );
+    }
+
+    private function mergeVehicleRecords(array $existing, array $incoming): array
+    {
+        $existing = array_replace($this->createVehicleRecord(), $existing);
+        $incoming = array_replace($this->createVehicleRecord(), $incoming);
+
+        if (($existing['plate'] ?? '---:---') === '---:---' && $incoming['plate'] !== '---:---' && $incoming['plate'] !== '') {
+            $existing['plate'] = $incoming['plate'];
+        }
+
+        $existing['distance'] = max((float)$existing['distance'], (float)$incoming['distance']);
+        $existing['insurance_until'] = max((int)$existing['insurance_until'], (int)$incoming['insurance_until']);
+
+        if (!empty($incoming['mod']) && is_array($incoming['mod'])) {
+            $existing['mod'] = $incoming['mod'];
+        }
+
+        if ((int)$incoming['acquired_at'] > (int)$existing['acquired_at']) {
+            $existing['acquired_at'] = (int)$incoming['acquired_at'];
+        }
+
+        if (!empty($incoming['discord_announced'])) {
+            $existing['discord_announced'] = true;
+        }
+
+        if (!empty($incoming['last_skin'])) {
+            $existing['last_skin'] = $incoming['last_skin'];
+        }
+
+        return $existing;
+    }
+
+    private function normaliseGarageState(array &$player): void
+    {
+        if (!isset($player['state']['garage']) || !is_array($player['state']['garage'])) {
+            $player['state']['garage'] = array(
+                'active_car' => '',
+                'active_skin' => '',
+                'vehicles' => array(),
+            );
+            $this->markStateDirty($player);
+            return;
+        }
+
+        $garage =& $player['state']['garage'];
+        if (!isset($garage['vehicles']) || !is_array($garage['vehicles'])) {
+            $garage['vehicles'] = array();
+        }
+
+        $vehicles = $garage['vehicles'];
+        $normalized = array();
+        $changed = false;
+
+        foreach ($vehicles as $code => $vehicle) {
+            $canonical = $this->vehicleMods->normaliseVehicleCode((string)$code);
+            if ($canonical === '') {
+                $changed = true;
+                continue;
+            }
+
+            if (!is_array($vehicle)) {
+                $vehicle = array();
+                $changed = true;
+            }
+
+            $vehicle = array_replace($this->createVehicleRecord(), $vehicle);
+
+            if ($canonical !== (string)$code) {
+                $changed = true;
+            }
+
+            if (isset($normalized[$canonical])) {
+                $vehicle = $this->mergeVehicleRecords($normalized[$canonical], $vehicle);
+                $changed = true;
+            }
+
+            $vehicle['distance'] = (float)$vehicle['distance'];
+            $vehicle['insurance_until'] = (int)$vehicle['insurance_until'];
+            $vehicle['acquired_at'] = (int)$vehicle['acquired_at'];
+            $vehicle['discord_announced'] = !empty($vehicle['discord_announced']);
+
+            if (!is_array($vehicle['mod'])) {
+                $vehicle['mod'] = array();
+            }
+
+            $normalized[$canonical] = $vehicle;
+        }
+
+        if ($normalized !== $vehicles) {
+            $changed = true;
+        }
+
+        $garage['vehicles'] = $normalized;
+
+        $active = (string)($garage['active_car'] ?? '');
+        if ($active !== '') {
+            $canonicalActive = $this->vehicleMods->normaliseVehicleCode($active);
+            if ($canonicalActive === '') {
+                $garage['active_car'] = '';
+                $changed = true;
+            } elseif ($canonicalActive !== $active) {
+                if (isset($garage['vehicles'][$canonicalActive])) {
+                    $garage['active_car'] = $canonicalActive;
+                } else {
+                    $garage['active_car'] = '';
+                }
+                $changed = true;
+            } elseif (!isset($garage['vehicles'][$active])) {
+                $garage['active_car'] = '';
+                $changed = true;
+            }
+        } elseif (!empty($garage['active_car'])) {
+            $garage['active_car'] = '';
+            $changed = true;
+        }
+
+        if ($changed) {
+            $this->markStateDirty($player);
+        }
     }
 
     private function showVehiclePriceButton(int $ucid, float $price): void

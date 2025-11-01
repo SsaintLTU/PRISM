@@ -393,7 +393,7 @@ class serverModes extends Plugins
         $player['positions'][$NPL->PLID] = null;
 
         if ($this->cruiseSystems->isActive()) {
-            $carCode = $this->vehicleMods->normalisePacketCarCode($NPL->CName ?? '');
+            $carCode = $this->vehicleMods->normaliseVehicleCode($NPL->CName ?? '');
             $skinName = trim($NPL->SName);
             $player['state']['garage']['active_car'] = $carCode;
             $player['state']['garage']['active_skin'] = $skinName;
@@ -437,7 +437,7 @@ class serverModes extends Plugins
         $player =& $this->ensurePlayer($ucid);
         $player['last_seen'] = time();
 
-        $carCode = $this->vehicleMods->normalisePacketCarCode($SLC->CName ?? '');
+        $carCode = $this->vehicleMods->normaliseVehicleCode($SLC->CName ?? '');
         $this->cruiseSystems->onVehicleSelected($player, $carCode);
 
         return PLUGIN_CONTINUE;
