@@ -1360,11 +1360,22 @@ class ServerModes_CruiseSystems
 
     private function drawButton(int $ucid, string $key, string $group, int $left, int $top, int $width, int $height, string $text, int $style, ?array $callback = null): void
     {
-        $button = new Button($ucid, $key, $group);
-        $button->L($left)->T($top)->W($width)->H($height)->BStyle($style)->Text($text);
+        $button = ButtonManager::getButtonForKey($ucid, $key);
+        if ($button === null || $button->group() !== $group) {
+            $button = new Button($ucid, $key, $group);
+        }
+
+        $button->L($left)
+            ->T($top)
+            ->W($width)
+            ->H($height)
+            ->BStyle($style)
+            ->Text($text);
+
         if ($callback !== null) {
             $button->registerOnClick($this->plugin, 'handleCruiseButton', $callback);
         }
+
         $button->Send();
     }
 
