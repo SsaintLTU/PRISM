@@ -86,6 +86,7 @@ class serverModes extends Plugins
         $this->registerPacket('onClientDisconnect', ISP_CNL);
         $this->registerPacket('onStateInfo', ISP_STA);
         $this->registerPacket('onPlayerJoinRace', ISP_NPL);
+        $this->registerPacket('onSelectedCar', ISP_SLC);
         $this->registerPacket('onPlayerPits', ISP_PLP);
         $this->registerPacket('onPlayerLeaveRace', ISP_PLL);
         $this->registerPacket('onCarInfo', ISP_MCI);
@@ -392,7 +393,7 @@ class serverModes extends Plugins
         $player['positions'][$NPL->PLID] = null;
 
         if ($this->cruiseSystems->isActive()) {
-            $carCode = trim($NPL->CName);
+            $carCode = $this->vehicleMods->normalisePacketCarCode($NPL->CName ?? '');
             $skinName = trim($NPL->SName);
             $player['state']['garage']['active_car'] = $carCode;
             $player['state']['garage']['active_skin'] = $skinName;
@@ -418,6 +419,26 @@ class serverModes extends Plugins
         }
 
         $this->driftSystems->onPlayerJoinRace($player, $NPL);
+
+        return PLUGIN_CONTINUE;
+    }
+
+    public function onSelectedCar(IS_SLC $SLC)
+    {
+        if (!$this->enabled || !$this->cruiseSystems->isActive()) {
+            return PLUGIN_CONTINUE;
+        }
+
+        $ucid = (int)$SLC->UCID;
+        if ($ucid <= 0) {
+            return PLUGIN_CONTINUE;
+        }
+
+        $player =& $this->ensurePlayer($ucid);
+        $player['last_seen'] = time();
+
+        $carCode = $this->vehicleMods->normalisePacketCarCode($SLC->CName ?? '');
+        $this->cruiseSystems->onVehicleSelected($player, $carCode);
 
         return PLUGIN_CONTINUE;
     }

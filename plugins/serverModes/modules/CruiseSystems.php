@@ -111,7 +111,7 @@ class ServerModes_CruiseSystems
             return true;
         }
 
-        $carCode = trim($packet->CName);
+        $carCode = $this->vehicleMods->normalisePacketCarCode($packet->CName ?? '');
         if ($carCode === '') {
             $this->hideVehiclePriceButton($ucid);
             $errorMessage = null;
@@ -151,7 +151,7 @@ class ServerModes_CruiseSystems
         $this->initialisePlayerState($player);
         $state =& $player['state'];
 
-        $carCode = trim($packet->CName);
+        $carCode = $this->vehicleMods->normalisePacketCarCode($packet->CName ?? '');
         $skin = trim($packet->SName);
         $changed = false;
 
@@ -195,6 +195,51 @@ class ServerModes_CruiseSystems
         }
 
         $this->evaluateJobEligibility($player);
+    }
+
+    public function onVehicleSelected(array &$player, string $carCode): void
+    {
+        if (!$this->active) {
+            return;
+        }
+
+        $ucid = (int)($player['ucid'] ?? 0);
+        $carCode = $this->vehicleMods->normaliseVehicleCode($carCode);
+
+        $this->initialisePlayerState($player);
+        $state =& $player['state'];
+
+        if ($carCode === '') {
+            if (($state['garage']['active_car'] ?? '') !== '') {
+                $state['garage']['active_car'] = '';
+                $this->markStateDirty($player);
+            }
+            if ($ucid > 0) {
+                $this->hideVehiclePriceButton($ucid);
+            }
+            return;
+        }
+
+        $previous = $state['garage']['active_car'] ?? '';
+        if ($previous !== $carCode) {
+            $state['garage']['active_car'] = $carCode;
+            $this->markStateDirty($player);
+        }
+
+        $isNew = !isset($state['garage']['vehicles'][$carCode]);
+        $this->vehicleMods->handleVehicleActivation($player, $carCode, $isNew);
+
+        $state =& $player['state'];
+        $vehicle = $state['garage']['vehicles'][$carCode] ?? null;
+        $price = (float)($vehicle['mod']['price'] ?? 0.0);
+
+        if ($ucid > 0) {
+            if ($price > 0.0) {
+                $this->showVehiclePriceButton($ucid, $price);
+            } else {
+                $this->hideVehiclePriceButton($ucid);
+            }
+        }
     }
 
     public function onPlayerLeaveRace(array &$player): void

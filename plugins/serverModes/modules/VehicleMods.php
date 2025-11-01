@@ -58,7 +58,7 @@ class ServerModes_VehicleMods
 
     public function handleVehicleActivation(array &$player, string $carCode, bool $isNew): void
     {
-        $carCode = trim($carCode);
+        $carCode = $this->normaliseVehicleCode($carCode);
         if ($carCode === '') {
             return;
         }
@@ -154,6 +154,49 @@ class ServerModes_VehicleMods
         }
 
         return null;
+    }
+
+    public function normalisePacketCarCode(string $value): string
+    {
+        $value = rtrim((string)$value, "\0");
+        if ($value === '') {
+            return '';
+        }
+
+        if (preg_match('/^[\\x20-\\x7E]+$/', $value)) {
+            return $this->normaliseCarCode($value);
+        }
+
+        $bytes = substr($value, 0, 4);
+        if ($bytes === '') {
+            return '';
+        }
+
+        if (strlen($bytes) < 4) {
+            $bytes = str_pad($bytes, 4, "\0", STR_PAD_RIGHT);
+        }
+
+        $decoded = @unpack('Vcode', $bytes);
+        if ($decoded !== false && isset($decoded['code'])) {
+            $code = strtoupper(str_pad(dechex((int)$decoded['code']), 8, '0', STR_PAD_LEFT));
+            if ($code === '00000000') {
+                return '';
+            }
+
+            return $code;
+        }
+
+        $hex = strtoupper(bin2hex($bytes));
+        if ($hex === '' || $hex === '00000000') {
+            return '';
+        }
+
+        return $hex;
+    }
+
+    public function normaliseVehicleCode(string $value): string
+    {
+        return $this->normalisePacketCarCode($value);
     }
 
     private function reloadFromDatabase(): void
