@@ -3440,23 +3440,22 @@ $INST = array(INST_ALWAYS_ON => 'INST_ALWAYS_ON');
 
 // BStyle byte : style flags for the button
 
-define('ISB_C1',    1);     // you can choose a standard
-define('ISB_C2',    2);     // interface colour using
-define('ISB_C4',    4);     // these 3 lowest bits - see below
-define('ISB_CLICK', 8);     // click this button to send IS_BTC
-define('ISB_LIGHT', 16);    // light button
-define('ISB_DARK',  32);    // dark button
-define('ISB_LEFT',  64);    // align text to left
-define('ISB_RIGHT', 128);   // align text to right
-
-// colour 0 : light grey        (not user editable)
-// colour 1 : title colour      (default:yellow)
-// colour 2 : unselected text   (default:black)
-// colour 3 : selected text     (default:white)
-// colour 4 : ok                (default:green)
-// colour 5 : cancel            (default:red)
-// colour 6 : text string       (default:pale blue)
-// colour 7 : unavailable       (default:grey)
+define('ISB_LGREY',  0);    // colour 0 : light grey        (not user editable)
+define('ISB_YELLOW', 1);    // colour 1 : title colour      (default:yellow)
+define('ISB_BLACK',  2);    // colour 2 : unselected text   (default:black)
+define('ISB_WHITE',  3);    // colour 3 : selected text     (default:white)
+define('ISB_GREEN',  4);    // colour 4 : ok                (default:green)
+define('ISB_RED',    5);    // colour 5 : cancel            (default:red)
+define('ISB_BLUE',   6);    // colour 6 : text string       (default:pale blue)
+define('ISB_DGREY',  7);    // colour 7 : unavailable       (default:grey)
+define('ISB_C1',     1);    // you can choose a standard
+define('ISB_C2',     2);    // interface colour using
+define('ISB_C4',     4);    // these 3 lowest bits - see below
+define('ISB_CLICK',  8);    // click this button to send IS_BTC
+define('ISB_LIGHT',  16);   // light button
+define('ISB_DARK',   32);   // dark button
+define('ISB_LEFT',   64);   // align text to left
+define('ISB_RIGHT',  128);  // align text to right
 
 // NOTE : If width or height are zero, this would normally be an invalid button.  But in that case if
 // there is an existing button with the same ClickID, all the packet contents are ignored except the
