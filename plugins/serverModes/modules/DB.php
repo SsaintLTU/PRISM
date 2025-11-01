@@ -406,6 +406,32 @@ class ServerModes_Database
         return $stmt->fetchAll() ?: array();
     }
 
+    public function fetchDailyDistanceLeaders(int $limit = 5): array
+    {
+        if (!$this->ensureConnection()) {
+            return array();
+        }
+
+        $sql = 'SELECT s.user_id, p.username, p.nickname, SUM(s.distance) AS distance
+                FROM prism_player_snapshots s
+                INNER JOIN prism_players p ON p.user_id = s.user_id
+                WHERE s.created_at >= CURDATE()
+                GROUP BY s.user_id, p.username, p.nickname
+                HAVING distance > 0
+                ORDER BY distance DESC
+                LIMIT :limit';
+
+        $stmt = $this->prepareStatement($sql);
+        if (!$stmt) {
+            return array();
+        }
+
+        $stmt->bindValue(':limit', max(1, $limit), PDO::PARAM_INT);
+        $stmt->execute();
+
+        return $stmt->fetchAll() ?: array();
+    }
+
     public function fetchKnownDriftLayouts(): array
     {
         if (!$this->ensureConnection()) {

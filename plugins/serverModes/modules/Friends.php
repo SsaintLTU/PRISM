@@ -105,6 +105,7 @@ class ServerModes_Friends
             'name' => $displayName,
             'online' => true,
             'ucid' => $match['ucid'] ?? 0,
+            'online_since' => (int)($match['connected_at'] ?? time()),
         );
 
         $this->markStateDirty($player);
@@ -226,6 +227,7 @@ class ServerModes_Friends
                 'name' => $row['friend_name'],
                 'online' => false,
                 'ucid' => 0,
+                'online_since' => 0,
             );
         }
 
@@ -239,16 +241,23 @@ class ServerModes_Friends
         foreach ($player['friends']['list'] as $friendId => &$info) {
             $info['online'] = false;
             $info['ucid'] = 0;
+            $info['online_since'] = 0;
         }
         unset($info);
 
         foreach ($this->plugin->getPlayerMap() as $other) {
             $otherUser = $other['user_id'] ?? 0;
             if ($otherUser && isset($player['friends']['list'][$otherUser])) {
-                $player['friends']['list'][$otherUser]['online'] = true;
-                $player['friends']['list'][$otherUser]['ucid'] = $other['ucid'] ?? 0;
+                $friend =& $player['friends']['list'][$otherUser];
+                $friend['online'] = true;
+                $friend['ucid'] = $other['ucid'] ?? 0;
+                $connectedAt = (int)($other['connected_at'] ?? time());
+                if (($friend['online_since'] ?? 0) === 0 || $friend['online_since'] > $connectedAt) {
+                    $friend['online_since'] = $connectedAt;
+                }
             }
         }
+        unset($friend);
 
         $this->panelDirty[$player['ucid']] = true;
     }
@@ -267,6 +276,11 @@ class ServerModes_Friends
                 if (isset($friends[$userId])) {
                     $friends[$userId]['online'] = $online;
                     $friends[$userId]['ucid'] = $online ? ($player['ucid'] ?? 0) : 0;
+                    if ($online) {
+                        $friends[$userId]['online_since'] = (int)($player['connected_at'] ?? time());
+                    } else {
+                        $friends[$userId]['online_since'] = 0;
+                    }
                     $this->panelDirty[$ucid] = true;
                     if ($online) {
                         $name = $player['nickname'] ?? $player['username'] ?? 'Player';
@@ -309,7 +323,13 @@ class ServerModes_Friends
             $row->L($left + 2)->T($top + 10)->W(86)->H(5)->BStyle(ISB_DARK | ISB_LEFT)->Text('^8No friends added yet.')->Send();
         } else {
             foreach ($friends as $friend) {
-                $status = $friend['online'] ? '^2Online' : '^8Offline';
+                if (!empty($friend['online'])) {
+                    $since = (int)($friend['online_since'] ?? 0);
+                    $duration = $since > 0 ? $this->formatDuration(time() - $since) : 'just now';
+                    $status = sprintf('^2Online ^7(%s)', $duration);
+                } else {
+                    $status = '^8Offline';
+                }
                 $text = sprintf('^3%s ^8- %s', $friend['name'], $status);
                 $row = new Button($ucid, 'FriendRow' . $rowIndex, self::PANEL_GROUP);
                 $row->L($left + 2)->T($top + 10 + ($rowIndex * 6))->W(86)->H(5)->BStyle(ISB_DARK | ISB_LEFT)->Text($text)->Send();
@@ -374,6 +394,27 @@ class ServerModes_Friends
     private function markStateDirty(array &$player): void
     {
         $player['state_dirty'] = true;
+    }
+
+    private function formatDuration(int $seconds): string
+    {
+        if ($seconds <= 0) {
+            return '0s';
+        }
+
+        $hours = intdiv($seconds, 3600);
+        $minutes = intdiv($seconds % 3600, 60);
+        $remaining = $seconds % 60;
+
+        if ($hours > 0) {
+            return sprintf('%dh %02dm', $hours, $minutes);
+        }
+
+        if ($minutes > 0) {
+            return sprintf('%dm %02ds', $minutes, $remaining);
+        }
+
+        return sprintf('%ds', $remaining);
     }
 
     private function sortFriends(array $friends): array

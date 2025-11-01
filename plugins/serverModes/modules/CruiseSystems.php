@@ -6,6 +6,7 @@ class ServerModes_CruiseSystems
     private const TELEPORT_GROUP = 'CruiseTeleport';
     private const REGITRA_GROUP = 'CruiseRegitra';
     private const AFK_GROUP = 'CruiseAfk';
+    private const DAILY_GROUP = 'CruiseDaily';
     public const POLICE_GROUP = 'CruisePolice';
 
     private serverModes $plugin;
@@ -21,6 +22,9 @@ class ServerModes_CruiseSystems
     private array $afkQueue = array();
     private ?int $afkQueueLeader = null;
     private int $maxPlayers = 20;
+    private array $dailyLeaderboardCache = array();
+    private int $dailyLeaderboardLimit = 5;
+    private int $dailyLeaderboardTtl = 30;
 
     public function __construct(serverModes $plugin, ServerModes_VehicleMods $vehicleMods, array $config = array())
     {
@@ -38,6 +42,12 @@ class ServerModes_CruiseSystems
         $this->jobTriggers = $this->indexJobTriggers($this->jobs);
         $this->officers = $this->parseList($this->config['police_officers'] ?? '');
 
+        $limit = $this->config['daily_leaderboard_limit'] ?? ($this->config['ui']['daily_leaderboard_limit'] ?? 5);
+        $this->dailyLeaderboardLimit = max(3, (int)$limit);
+        $ttl = $this->config['daily_leaderboard_ttl'] ?? 30;
+        $this->dailyLeaderboardTtl = max(5, (int)$ttl);
+        $this->dailyLeaderboardCache = array();
+
         $configuredMax = $this->config['max_players'] ?? ($this->config['limits']['max_players'] ?? $this->maxPlayers);
         $this->maxPlayers = max(1, (int)$configuredMax);
     }
@@ -50,12 +60,14 @@ class ServerModes_CruiseSystems
     public function onActivate(): void
     {
         $this->active = true;
+        $this->dailyLeaderboardCache = array();
     }
 
     public function onDeactivate(): void
     {
         $this->active = false;
         $this->clearAllButtons();
+        $this->dailyLeaderboardCache = array();
     }
 
     public function onPlayerConnected(array &$player): void
@@ -77,6 +89,7 @@ class ServerModes_CruiseSystems
         ButtonManager::removeButtonsByGroup($ucid, self::REGITRA_GROUP);
         ButtonManager::removeButtonsByGroup($ucid, self::POLICE_GROUP);
         ButtonManager::removeButtonsByGroup($ucid, self::AFK_GROUP);
+        ButtonManager::removeButtonsByGroup($ucid, self::DAILY_GROUP);
         unset($this->hudRendered[$ucid]);
         $this->removeAfkQueueEntry($ucid);
     }
@@ -183,6 +196,10 @@ class ServerModes_CruiseSystems
             'x' => $info->X / 65536.0,
             'y' => $info->Y / 65536.0,
         );
+
+        if ($this->updateAcceleration($player, $speedKph)) {
+            $this->markStateDirty($player);
+        }
 
         $activeCar = $state['garage']['active_car'] ?? '';
         if ($activeCar !== '') {
@@ -366,6 +383,45 @@ class ServerModes_CruiseSystems
             ISB_DARK | ISB_RED,
             array($ucid, 'bank', 'close')
         );
+    }
+
+    public function handleDailyAction(int $ucid, string $action): void
+    {
+        $player =& $this->plugin->getPlayerRecord($ucid);
+        $this->initialisePlayerState($player);
+
+        $state =& $player['state']['ui']['daily'];
+        if (!is_array($state)) {
+            $state = array(
+                'visible' => true,
+                'left' => 4,
+                'top' => 120,
+                'row_keys' => array(),
+            );
+            $this->markStateDirty($player);
+        }
+
+        switch ($action) {
+            case 'toggle':
+                $state['visible'] = !empty($state['visible']) ? false : true;
+                if (!$state['visible']) {
+                    ButtonManager::removeButtonsByGroup($ucid, self::DAILY_GROUP);
+                }
+                $this->markStateDirty($player);
+                break;
+            case 'up':
+                $this->offsetDailyPanel($player, 0, -3);
+                break;
+            case 'down':
+                $this->offsetDailyPanel($player, 0, 3);
+                break;
+            case 'left':
+                $this->offsetDailyPanel($player, -3, 0);
+                break;
+            case 'right':
+                $this->offsetDailyPanel($player, 3, 0);
+                break;
+        }
     }
 
     public function handleBankAction(int $ucid, string $action): void
@@ -978,6 +1034,18 @@ class ServerModes_CruiseSystems
 
         $lineTwo = sprintf('^7Session:^3%s ^7Dist:^3%.2f km ^7Safety:%s', $this->formatSignedCurrency($sessionMoney), $sessionDistance, $safety);
 
+        $accel = $state['telemetry']['accel'] ?? array();
+        $lastAccel = $this->formatInterval((float)($accel['last'] ?? 0.0));
+        $bestAccel = $this->formatInterval((float)($accel['best'] ?? 0.0));
+        if (!empty($accel['active'])) {
+            $status = '^3Measuring';
+        } elseif (!empty($accel['ready'])) {
+            $status = '^2Ready';
+        } else {
+            $status = '^8Idle';
+        }
+        $accelLine = sprintf('^70-100:^3%s ^8| ^7Best:^3%s ^8| ^7Status:%s', $lastAccel, $bestAccel, $status);
+
         $jobLine = null;
         if (is_array($state['jobs']['active'] ?? null)) {
             $job = $state['jobs']['active'];
@@ -988,6 +1056,7 @@ class ServerModes_CruiseSystems
         }
 
         $this->drawButton($ucid, 'HudMain', self::HUD_GROUP, 0, 0, 200, 4, $lineOne, ISB_DARK | ISB_LEFT | ISB_CLICK);
+        $this->drawButton($ucid, 'HudAccel', self::HUD_GROUP, 0, 188, 200, 4, $accelLine, ISB_DARK | ISB_LEFT);
         if ($jobLine !== null) {
             $this->drawButton($ucid, 'HudJob', self::HUD_GROUP, 0, 192, 200, 4, $jobLine, ISB_DARK | ISB_LEFT);
             $this->drawButton($ucid, 'HudSession', self::HUD_GROUP, 0, 196, 200, 4, $lineTwo, ISB_DARK | ISB_LEFT);
@@ -996,7 +1065,340 @@ class ServerModes_CruiseSystems
             $this->drawButton($ucid, 'HudSession', self::HUD_GROUP, 0, 196, 200, 4, $lineTwo, ISB_DARK | ISB_LEFT);
         }
 
+        $this->renderDailyLeaderboard($player);
+
         $this->hudRendered[$ucid] = true;
+    }
+
+    private function renderDailyLeaderboard(array &$player): void
+    {
+        $ucid = $player['ucid'] ?? 0;
+        if ($ucid === 0) {
+            return;
+        }
+
+        $state =& $player['state']['ui']['daily'];
+        if (!is_array($state)) {
+            $state = array(
+                'visible' => true,
+                'left' => 4,
+                'top' => 120,
+                'row_keys' => array(),
+            );
+            $this->markStateDirty($player);
+        } else {
+            $defaults = array(
+                'visible' => true,
+                'left' => 4,
+                'top' => 120,
+                'row_keys' => array(),
+            );
+            $merged = array_replace($defaults, $state);
+            if ($merged !== $state) {
+                $state = $merged;
+                $this->markStateDirty($player);
+            }
+        }
+
+        if (empty($state['visible'])) {
+            $left = max(0, min(IS_X_MAX - 60, (int)$state['left']));
+            $top = max(20, min(IS_Y_MAX - 6, (int)$state['top']));
+
+            ButtonManager::removeButtonsByGroup($ucid, self::DAILY_GROUP);
+            $this->drawButton(
+                $ucid,
+                'DailyCollapsed',
+                self::DAILY_GROUP,
+                $left,
+                $top,
+                60,
+                5,
+                '^2Show daily top',
+                ISB_DARK | ISB_CLICK | ISB_LEFT,
+                array($ucid, 'daily', 'toggle')
+            );
+
+            if (($state['row_keys'] ?? null) !== array('DailyCollapsed')) {
+                $state['row_keys'] = array('DailyCollapsed');
+                $this->markStateDirty($player);
+            }
+
+            return;
+        }
+
+        $focusUserId = $player['user_id'] ?? 0;
+        $leaderboard = $this->buildDailyLeaderboard($focusUserId, $player);
+        $rows = $leaderboard['rows'];
+
+        $left = max(0, min(IS_X_MAX - 74, (int)$state['left']));
+        $top = max(20, min(IS_Y_MAX - 60, (int)$state['top']));
+        $rowCount = max(1, count($rows));
+        $height = 16 + ($rowCount * 6) + 8;
+
+        $this->drawButton($ucid, 'DailyBG', self::DAILY_GROUP, $left, $top, 74, $height, '', ISB_DARK);
+        $this->drawButton($ucid, 'DailyTitle', self::DAILY_GROUP, $left + 2, $top + 2, 70, 6, '^7Top drivers today', ISB_DARK | ISB_YELLOW);
+
+        $this->drawButton(
+            $ucid,
+            'DailyToggle',
+            self::DAILY_GROUP,
+            $left + 44,
+            $top + 2,
+            28,
+            6,
+            '^1Hide',
+            ISB_DARK | ISB_CLICK | ISB_LEFT,
+            array($ucid, 'daily', 'toggle')
+        );
+
+        $activeKeys = array('DailyBG', 'DailyTitle', 'DailyToggle');
+        $rowTop = $top + 10;
+
+        if (empty($rows)) {
+            $this->drawButton($ucid, 'DailyRowEmpty', self::DAILY_GROUP, $left + 2, $rowTop, 70, 5, '^8No distance recorded yet.', ISB_DARK | ISB_LEFT);
+            $activeKeys[] = 'DailyRowEmpty';
+        } else {
+            foreach ($rows as $index => $row) {
+                $rank = (int)($row['rank'] ?? ($index + 1));
+                $name = $row['nickname'] !== '' ? $row['nickname'] : $row['username'];
+                $distance = $this->formatDistance((float)($row['distance'] ?? 0.0));
+                $highlight = ($focusUserId > 0 && $row['user_id'] === $focusUserId);
+                $color = $highlight ? '^2' : '^3';
+                $text = sprintf('%s%2d.^7 %s ^8%s km', $color, $rank, $name, $distance);
+
+                $rowKey = 'DailyRow' . $rank;
+                $this->drawButton($ucid, $rowKey, self::DAILY_GROUP, $left + 2, $rowTop + ($index * 6), 70, 5, $text, ISB_DARK | ISB_LEFT);
+                $activeKeys[] = $rowKey;
+            }
+        }
+
+        $controlsTop = $top + $height - 8;
+        $this->drawButton($ucid, 'DailyMoveUp', self::DAILY_GROUP, $left + 24, $controlsTop, 6, 5, '^', ISB_DARK | ISB_CLICK, array($ucid, 'daily', 'up'));
+        $this->drawButton($ucid, 'DailyMoveLeft', self::DAILY_GROUP, $left + 16, $controlsTop + 5, 6, 5, '<', ISB_DARK | ISB_CLICK, array($ucid, 'daily', 'left'));
+        $this->drawButton($ucid, 'DailyMoveDown', self::DAILY_GROUP, $left + 24, $controlsTop + 5, 6, 5, 'v', ISB_DARK | ISB_CLICK, array($ucid, 'daily', 'down'));
+        $this->drawButton($ucid, 'DailyMoveRight', self::DAILY_GROUP, $left + 32, $controlsTop + 5, 6, 5, '>', ISB_DARK | ISB_CLICK, array($ucid, 'daily', 'right'));
+        $activeKeys = array_merge($activeKeys, array('DailyMoveUp', 'DailyMoveLeft', 'DailyMoveDown', 'DailyMoveRight'));
+
+        $previousKeys = is_array($state['row_keys']) ? $state['row_keys'] : array();
+        $rowKeys = array();
+        foreach ($activeKeys as $key) {
+            if (strpos($key, 'DailyRow') === 0 || $key === 'DailyRowEmpty') {
+                $rowKeys[] = $key;
+            }
+        }
+
+        foreach ($previousKeys as $key) {
+            if (!in_array($key, $rowKeys, true)) {
+                ButtonManager::removeButtonByKey($ucid, $key);
+            }
+        }
+
+        if ($rowKeys !== $previousKeys) {
+            $state['row_keys'] = $rowKeys;
+            $this->markStateDirty($player);
+        }
+    }
+
+    private function offsetDailyPanel(array &$player, int $dx, int $dy): void
+    {
+        $state =& $player['state']['ui']['daily'];
+        if (!is_array($state)) {
+            $state = array(
+                'visible' => true,
+                'left' => 4,
+                'top' => 120,
+                'row_keys' => array(),
+            );
+        }
+
+        $state['left'] = max(0, min(IS_X_MAX - 74, (int)($state['left'] ?? 4) + $dx));
+        $state['top'] = max(20, min(IS_Y_MAX - 60, (int)($state['top'] ?? 120) + $dy));
+        $this->markStateDirty($player);
+    }
+
+    private function buildDailyLeaderboard(int $focusUserId, array $focusPlayer): array
+    {
+        $leaders = array();
+        foreach ($this->getBaseDailyLeaderboard() as $row) {
+            $userId = (int)($row['user_id'] ?? 0);
+            if ($userId <= 0) {
+                continue;
+            }
+
+            $leaders[$userId] = array(
+                'user_id' => $userId,
+                'username' => (string)($row['username'] ?? ''),
+                'nickname' => (string)($row['nickname'] ?? ''),
+                'distance' => max(0.0, (float)($row['distance'] ?? 0.0)),
+            );
+        }
+
+        foreach ($this->plugin->getPlayerMap() as $other) {
+            $userId = (int)($other['user_id'] ?? 0);
+            if ($userId <= 0) {
+                continue;
+            }
+
+            $sessionDistance = (float)($other['session']['distance_km'] ?? 0.0);
+            if ($sessionDistance <= 0.0) {
+                continue;
+            }
+
+            if (!isset($leaders[$userId])) {
+                $leaders[$userId] = array(
+                    'user_id' => $userId,
+                    'username' => (string)($other['username'] ?? ''),
+                    'nickname' => (string)($other['nickname'] ?? ''),
+                    'distance' => 0.0,
+                );
+            }
+
+            $leaders[$userId]['distance'] += $sessionDistance;
+
+            if (!empty($other['nickname'])) {
+                $leaders[$userId]['nickname'] = $other['nickname'];
+            }
+            if (!empty($other['username'])) {
+                $leaders[$userId]['username'] = $other['username'];
+            }
+        }
+
+        if ($focusUserId > 0 && !isset($leaders[$focusUserId])) {
+            $session = (float)($focusPlayer['session']['distance_km'] ?? 0.0);
+            if ($session > 0.0) {
+                $leaders[$focusUserId] = array(
+                    'user_id' => $focusUserId,
+                    'username' => (string)($focusPlayer['username'] ?? ''),
+                    'nickname' => (string)($focusPlayer['nickname'] ?? ''),
+                    'distance' => $session,
+                );
+            }
+        }
+
+        $leaders = array_filter($leaders, function ($row) {
+            return ($row['distance'] ?? 0.0) > 0.0;
+        });
+
+        if (empty($leaders)) {
+            return array('rows' => array(), 'map' => array());
+        }
+
+        usort($leaders, function ($a, $b) {
+            $compare = $b['distance'] <=> $a['distance'];
+            if ($compare !== 0) {
+                return $compare;
+            }
+
+            $nameA = $this->leaderboardName($a);
+            $nameB = $this->leaderboardName($b);
+            return strcmp($nameA, $nameB);
+        });
+
+        $map = array();
+        foreach ($leaders as $index => &$row) {
+            $row['rank'] = $index + 1;
+            $map[$row['user_id']] = $row;
+        }
+        unset($row);
+
+        $rows = array_slice($leaders, 0, $this->dailyLeaderboardLimit);
+        if ($focusUserId > 0 && isset($map[$focusUserId]) && $map[$focusUserId]['rank'] > $this->dailyLeaderboardLimit) {
+            $rows[] = $map[$focusUserId];
+        }
+
+        return array('rows' => $rows, 'map' => $map);
+    }
+
+    private function getBaseDailyLeaderboard(): array
+    {
+        $expires = $this->dailyLeaderboardCache['expires'] ?? 0;
+        if ($expires <= time()) {
+            $rows = array();
+            $database = $this->plugin->getDatabase();
+            if ($database) {
+                $limit = max($this->dailyLeaderboardLimit + 5, 10);
+                foreach ($database->fetchDailyDistanceLeaders($limit) as $row) {
+                    $userId = (int)($row['user_id'] ?? 0);
+                    if ($userId <= 0) {
+                        continue;
+                    }
+                    $rows[] = array(
+                        'user_id' => $userId,
+                        'username' => (string)($row['username'] ?? ''),
+                        'nickname' => (string)($row['nickname'] ?? ''),
+                        'distance' => max(0.0, (float)($row['distance'] ?? 0.0)),
+                    );
+                }
+            }
+
+            $this->dailyLeaderboardCache = array(
+                'rows' => $rows,
+                'expires' => time() + $this->dailyLeaderboardTtl,
+            );
+        }
+
+        return $this->dailyLeaderboardCache['rows'] ?? array();
+    }
+
+    private function updateAcceleration(array &$player, float $speedKph): bool
+    {
+        if (!isset($player['state']['telemetry']) || !is_array($player['state']['telemetry'])) {
+            return false;
+        }
+
+        $telemetry =& $player['state']['telemetry'];
+        if (!isset($telemetry['accel']) || !is_array($telemetry['accel'])) {
+            $telemetry['accel'] = array(
+                'start' => 0.0,
+                'last' => 0.0,
+                'best' => 0.0,
+                'active' => false,
+                'ready' => true,
+            );
+        }
+
+        $accel =& $telemetry['accel'];
+        $changed = false;
+        $now = microtime(true);
+
+        if ($speedKph <= 2.0) {
+            if (!empty($accel['active']) || empty($accel['ready'])) {
+                $accel['active'] = false;
+                $accel['ready'] = true;
+                $accel['start'] = 0.0;
+                $changed = true;
+            }
+            return $changed;
+        }
+
+        if (empty($accel['active']) && !empty($accel['ready']) && $speedKph >= 5.0) {
+            $accel['active'] = true;
+            $accel['ready'] = false;
+            $accel['start'] = $now;
+            $changed = true;
+        }
+
+        if (!empty($accel['active'])) {
+            if ($speedKph >= 100.0 && ($accel['start'] ?? 0.0) > 0.0) {
+                $elapsed = max(0.0, $now - (float)$accel['start']);
+                $accel['last'] = $elapsed;
+                $best = (float)($accel['best'] ?? 0.0);
+                if ($best <= 0.0 || $elapsed < $best) {
+                    $accel['best'] = $elapsed;
+                }
+                $accel['active'] = false;
+                $accel['ready'] = false;
+                $accel['start'] = 0.0;
+                $changed = true;
+            } elseif ($speedKph < 3.0) {
+                $accel['active'] = false;
+                $accel['ready'] = true;
+                $accel['start'] = 0.0;
+                $changed = true;
+            }
+        }
+
+        return $changed;
     }
 
     private function tickAfk(array &$player): void
@@ -1352,6 +1754,7 @@ class ServerModes_CruiseSystems
             ButtonManager::removeButtonsByGroup($ucid, self::REGITRA_GROUP);
             ButtonManager::removeButtonsByGroup($ucid, self::POLICE_GROUP);
             ButtonManager::removeButtonsByGroup($ucid, self::AFK_GROUP);
+            ButtonManager::removeButtonsByGroup($ucid, self::DAILY_GROUP);
         }
         $this->hudRendered = array();
         $this->afkQueue = array();
@@ -1430,8 +1833,22 @@ class ServerModes_CruiseSystems
                 'position' => array('x' => 0.0, 'y' => 0.0),
                 'last_move' => $now,
                 'heading' => 0.0,
+                'accel' => array(
+                    'start' => 0.0,
+                    'last' => 0.0,
+                    'best' => 0.0,
+                    'active' => false,
+                    'ready' => true,
+                ),
             ),
-            'ui' => array(),
+            'ui' => array(
+                'daily' => array(
+                    'visible' => true,
+                    'left' => 4,
+                    'top' => 120,
+                    'row_keys' => array(),
+                ),
+            ),
             'afk' => array(
                 'status' => 'active',
                 'since' => $now,
@@ -1474,6 +1891,32 @@ class ServerModes_CruiseSystems
         return ($amount >= 0 ? '^2+' : '^1-') . $formatted;
     }
 
+    private function formatDistance(float $distance): string
+    {
+        if ($distance >= 1000.0) {
+            return number_format($distance, 0, '.', '');
+        }
+        if ($distance >= 100.0) {
+            return number_format($distance, 1, '.', '');
+        }
+        return number_format($distance, 2, '.', '');
+    }
+
+    private function formatInterval(float $seconds): string
+    {
+        if ($seconds <= 0.0) {
+            return '--';
+        }
+
+        if ($seconds >= 60.0) {
+            $minutes = (int)floor($seconds / 60.0);
+            $remaining = $seconds - ($minutes * 60.0);
+            return sprintf('%dm %04.1fs', $minutes, $remaining);
+        }
+
+        return sprintf('%.2fs', $seconds);
+    }
+
     private function formatStars(float $safetyPoints): string
     {
         $maxStars = 5;
@@ -1497,6 +1940,15 @@ class ServerModes_CruiseSystems
             return sprintf('%dm %02ds', $minutes, $remaining);
         }
         return sprintf('%ds', $seconds);
+    }
+
+    private function leaderboardName(array $row): string
+    {
+        $name = (string)($row['nickname'] ?? '');
+        if ($name === '') {
+            $name = (string)($row['username'] ?? '');
+        }
+        return strtolower(trim(preg_replace('/\^./', '', $name)));
     }
 
     private function parseList($raw): array

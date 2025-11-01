@@ -547,6 +547,9 @@ class serverModes extends Plugins
             case 'regitra':
                 $this->cruiseSystems->handleRegitraAction($ucid, (string)$action);
                 break;
+            case 'daily':
+                $this->cruiseSystems->handleDailyAction($ucid, (string)$action);
+                break;
             case 'police':
                 if ($action === 'close') {
                     ButtonManager::removeButtonsByGroup($ucid, ServerModes_CruiseSystems::POLICE_GROUP);
