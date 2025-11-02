@@ -240,13 +240,14 @@ class ServerModes_CruiseSystems
         $this->initialisePlayerState($player);
         $state =& $player['state'];
 
+        if ($ucid > 0) {
+            $this->hideVehiclePriceButton($ucid);
+        }
+
         if ($carCode === '') {
             if (($state['garage']['active_car'] ?? '') !== '') {
                 $state['garage']['active_car'] = '';
                 $this->markStateDirty($player);
-            }
-            if ($ucid > 0) {
-                $this->hideVehiclePriceButton($ucid);
             }
             return;
         }
@@ -261,14 +262,12 @@ class ServerModes_CruiseSystems
         $this->vehicleMods->handleVehicleActivation($player, $carCode, $isNew);
 
         $state =& $player['state'];
-        $vehicle = $state['garage']['vehicles'][$carCode] ?? null;
+        $vehicle = $state['garage']['vehicles'][$carCode] ?? array();
         $price = (float)($vehicle['mod']['price'] ?? 0.0);
 
         if ($ucid > 0) {
             if ($price > 0.0) {
                 $this->showVehiclePriceButton($ucid, $price);
-            } else {
-                $this->hideVehiclePriceButton($ucid);
             }
         }
     }
@@ -1203,6 +1202,8 @@ class ServerModes_CruiseSystems
         $this->initialisePlayerState($player);
         $vehicles =& $player['state']['garage']['vehicles'];
 
+        $this->hideVehiclePriceButton($ucid);
+
         foreach ($vehicles as $code => &$vehicle) {
             if (empty($vehicle['mod'])) {
                 $this->vehicleMods->handleVehicleActivation($player, $code, false);
@@ -1213,8 +1214,9 @@ class ServerModes_CruiseSystems
 
         ButtonManager::removeButtonsByGroup($ucid, self::REGITRA_GROUP);
 
+        $rowHeight = 12;
         $width = 110;
-        $height = 20 + (count($vehicles) * 6);
+        $height = 20 + (count($vehicles) * $rowHeight);
         $left = (int)((IS_X_MAX - $width) / 2);
         $top = 60;
 
@@ -1240,8 +1242,28 @@ class ServerModes_CruiseSystems
             if ($codeLabel === '') {
                 $codeLabel = $code;
             }
-            $text = sprintf('^3%s ^7(%s) ^8| ^7Plate:^3 %s ^8| ^7%.2f km', $label, $codeLabel, $plate, $distance);
-            $this->drawButton($ucid, 'GarageItem' . $row, self::REGITRA_GROUP, $left + 2, $top + 10 + ($row * 6), $width - 4, 5, $text, ISB_DARK | ISB_LEFT);
+            $price = (float)($vehicle['mod']['price'] ?? 0.0);
+            $power = (float)($vehicle['mod']['power_kw'] ?? 0.0);
+            $weight = (float)($vehicle['mod']['weight_kg'] ?? 0.0);
+            $category = trim((string)($vehicle['mod']['category'] ?? ''));
+
+            $lineTop = $top + 10 + ($row * $rowHeight);
+            $mainLine = sprintf('^3%s ^7(%s) ^8| ^7Plate:^3 %s ^8| ^7%.2f km', $label, $codeLabel, $plate, $distance);
+
+            $metaParts = array('^7Price:^3 ' . $this->formatCurrency($price));
+            if ($category !== '') {
+                $metaParts[] = '^7Class:^3 ' . $category;
+            }
+            if ($power > 0.0) {
+                $metaParts[] = '^7Power:^3 ' . number_format($power, 0) . ' kW';
+            }
+            if ($weight > 0.0) {
+                $metaParts[] = '^7Weight:^3 ' . number_format($weight, 0) . ' kg';
+            }
+            $metaLine = implode(' ^8| ', $metaParts);
+
+            $this->drawButton($ucid, 'GarageItemMain' . $row, self::REGITRA_GROUP, $left + 2, $lineTop, $width - 4, 5, $mainLine, ISB_DARK | ISB_LEFT);
+            $this->drawButton($ucid, 'GarageItemMeta' . $row, self::REGITRA_GROUP, $left + 2, $lineTop + 6, $width - 4, 5, $metaLine, ISB_DARK | ISB_LEFT);
             $row++;
         }
 
@@ -2080,7 +2102,7 @@ class ServerModes_CruiseSystems
 
     private function resolveButtonInst(string $group): ?int
     {
-        if ($group === self::REGITRA_GROUP) {
+        if ($group === self::REGITRA_GROUP || $group === self::PRICE_GROUP) {
             return INST_ALWAYS_ON;
         }
 
