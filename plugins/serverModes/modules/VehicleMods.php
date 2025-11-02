@@ -140,20 +140,88 @@ class ServerModes_VehicleMods
             return $this->modsById[$upper];
         }
 
-        if (preg_match('/^[0-9A-F]{4,}$/', $upper)) {
-            if (isset($this->modsByHex[$upper])) {
-                return $this->modsByHex[$upper];
+        if (preg_match('/^[0-9A-F]{3,}$/', $upper)) {
+            $hexCandidates = array($upper);
+
+            if ((strlen($upper) % 2) !== 0) {
+                $hexCandidates[] = '0' . $upper;
             }
-            $decoded = @hex2bin($upper);
-            if ($decoded !== false) {
-                $decoded = strtoupper(trim($decoded));
-                if ($decoded !== '' && isset($this->modsByCode[$decoded])) {
-                    return $this->modsByCode[$decoded];
+
+            foreach ($hexCandidates as $candidate) {
+                if (strlen($candidate) < 8) {
+                    $hexCandidates[] = str_pad($candidate, 8, '0', STR_PAD_LEFT);
+                }
+            }
+
+            $hexCandidates = array_values(array_unique(array_map('strtoupper', $hexCandidates)));
+
+            foreach ($hexCandidates as $candidate) {
+                if ($candidate !== '' && isset($this->modsByHex[$candidate])) {
+                    return $this->modsByHex[$candidate];
+                }
+            }
+
+            foreach ($hexCandidates as $candidate) {
+                if ($candidate === '' || (strlen($candidate) % 2) !== 0) {
+                    continue;
+                }
+
+                $decoded = @hex2bin($candidate);
+                if ($decoded !== false) {
+                    $decoded = strtoupper(trim($decoded));
+                    if ($decoded !== '' && isset($this->modsByCode[$decoded])) {
+                        return $this->modsByCode[$decoded];
+                    }
                 }
             }
         }
 
         return null;
+    }
+
+    public function updateModPrice(string $identifier, float $price): ?array
+    {
+        $identifier = trim($identifier);
+        if ($identifier === '') {
+            return null;
+        }
+
+        $mod = $this->getMod($identifier);
+        if ($mod === null) {
+            return null;
+        }
+
+        $price = max(0.0, round($price, 2));
+
+        $id = strtoupper((string)($mod['id'] ?? ''));
+        if ($id === '') {
+            return null;
+        }
+
+        if (!$this->database->updateVehicleModPrice($id, $price)) {
+            return null;
+        }
+
+        $mod['price'] = $price;
+
+        if (isset($this->modsById[$id])) {
+            $this->modsById[$id]['price'] = $price;
+            $mod = $this->modsById[$id];
+        }
+
+        $code = strtoupper((string)($mod['car_code'] ?? ''));
+        if ($code !== '' && isset($this->modsByCode[$code])) {
+            $this->modsByCode[$code]['price'] = $price;
+            $mod = $this->modsByCode[$code];
+        }
+
+        $hex = strtoupper((string)($mod['hex_code'] ?? ''));
+        if ($hex !== '' && isset($this->modsByHex[$hex])) {
+            $this->modsByHex[$hex]['price'] = $price;
+            $mod = $this->modsByHex[$hex];
+        }
+
+        return $mod;
     }
 
     public function normalisePacketCarCode(string $value): string

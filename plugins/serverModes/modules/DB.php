@@ -279,6 +279,29 @@ class ServerModes_Database
         return $prices;
     }
 
+    public function updateVehicleModPrice(string $id, float $price): bool
+    {
+        if (!$this->ensureConnection()) {
+            return false;
+        }
+
+        $sql = 'UPDATE prism_vehicle_mods SET price = :price, updated_at = NOW() WHERE id = :id';
+        $stmt = $this->prepareStatement($sql);
+        if (!$stmt) {
+            return false;
+        }
+
+        try {
+            return $stmt->execute(array(
+                ':id' => strtoupper(trim($id)),
+                ':price' => $price,
+            ));
+        } catch (PDOException $e) {
+            console('serverModes: failed to update vehicle price - ' . $e->getMessage());
+            return false;
+        }
+    }
+
     public function getLatestVehicleModTimestamp(): ?int
     {
         if (!$this->ensureConnection()) {

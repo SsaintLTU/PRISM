@@ -103,6 +103,7 @@ class serverModes extends Plugins
         $this->registerSayCommand('regitra', 'commandCruiseRegitra', 'Open vehicle registry.');
         $this->registerSayCommand('garage', 'commandCruiseGarage', 'Show owned vehicles.');
         $this->registerSayCommand('chase', 'commandCruiseChase', 'Open the police menu.');
+        $this->registerSayCommand('carprice', 'commandSetVehiclePrice', 'Set the price for a vehicle mod.');
         $this->registerSayCommand('add', 'commandAddFriend', 'Add a player to your friends list.');
         $this->registerSayCommand('friends', 'commandFriends', 'Manage your friends list display.');
         $this->registerSayCommand('pmto', 'commandPmTo', 'Select a player for private messaging.');
@@ -187,6 +188,44 @@ class serverModes extends Plugins
         }
 
         $this->cruiseSystems->showPoliceMenu($ucid);
+        return PLUGIN_HANDLED;
+    }
+
+    public function commandSetVehiclePrice($cmd, $ucid, $packet = null)
+    {
+        if (!$this->enabled || !$this->cruiseSystems->isActive()) {
+            return PLUGIN_HANDLED;
+        }
+
+        $argument = trim(substr($cmd, strlen('carprice')));
+        if ($argument === '') {
+            $this->MsgToUCID($ucid, '^1Usage:^7 !carprice <code> <price>');
+            return PLUGIN_HANDLED;
+        }
+
+        $parts = preg_split('/\s+/', $argument);
+        if (!is_array($parts) || count($parts) < 2) {
+            $this->MsgToUCID($ucid, '^1Usage:^7 !carprice <code> <price>');
+            return PLUGIN_HANDLED;
+        }
+
+        $identifier = (string)array_shift($parts);
+        $priceToken = (string)array_shift($parts);
+        $priceToken = str_replace(',', '.', $priceToken);
+
+        if (!is_numeric($priceToken)) {
+            $this->MsgToUCID($ucid, '^1Invalid price amount.');
+            return PLUGIN_HANDLED;
+        }
+
+        $price = (float)$priceToken;
+        if ($price < 0) {
+            $this->MsgToUCID($ucid, '^1Price cannot be negative.');
+            return PLUGIN_HANDLED;
+        }
+
+        $this->cruiseSystems->handleVehiclePriceCommand($ucid, $identifier, $price);
+
         return PLUGIN_HANDLED;
     }
 
