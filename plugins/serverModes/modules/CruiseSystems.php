@@ -42,6 +42,7 @@ class ServerModes_CruiseSystems
         $this->jobs = $this->parseJobs($this->config['jobs'] ?? array());
         $this->jobTriggers = $this->indexJobTriggers($this->jobs);
         $this->officers = $this->parseList($this->config['police_officers'] ?? '');
+        $this->refreshOfficerAssignments();
 
         $limit = $this->config['daily_leaderboard_limit'] ?? ($this->config['ui']['daily_leaderboard_limit'] ?? 5);
         $this->dailyLeaderboardLimit = max(3, (int)$limit);
@@ -62,6 +63,7 @@ class ServerModes_CruiseSystems
     {
         $this->active = true;
         $this->dailyLeaderboardCache = array();
+        $this->refreshOfficerAssignments();
     }
 
     public function onDeactivate(): void
@@ -94,6 +96,11 @@ class ServerModes_CruiseSystems
         ButtonManager::removeButtonsByGroup($ucid, self::PRICE_GROUP);
         unset($this->hudRendered[$ucid]);
         $this->removeAfkQueueEntry($ucid);
+    }
+
+    public function onPlayerRenamed(array &$player, string $newNickname): void
+    {
+        $this->syncOfficerState($player, $this->active);
     }
 
     public function handleJoinAttempt(array &$player, IS_NPL $packet, ?string &$errorMessage = null): bool
@@ -2089,9 +2096,101 @@ class ServerModes_CruiseSystems
             $player['state'] = array_replace_recursive($this->defaultState(), $player['state']);
         }
 
-        $player['state']['police']['officer'] = $this->isOfficer($player);
+        $this->syncOfficerState($player);
 
         $this->normaliseGarageState($player);
+    }
+
+    private function refreshOfficerAssignments(): void
+    {
+        foreach ($this->plugin->getPlayerMap() as &$player) {
+            if (!is_array($player)) {
+                continue;
+            }
+
+            $this->syncOfficerState($player);
+        }
+        unset($player);
+    }
+
+    private function syncOfficerState(array &$player, bool $notify = false): void
+    {
+        if (!isset($player['state']) || !is_array($player['state'])) {
+            $player['state'] = array();
+        }
+        if (!isset($player['state']['police']) || !is_array($player['state']['police'])) {
+            $player['state']['police'] = array();
+        }
+
+        $previous = (bool)($player['state']['police']['officer'] ?? false);
+        $current = $this->determineOfficerStatus($player);
+
+        if ($current === $previous) {
+            $player['state']['police']['officer'] = $current;
+            return;
+        }
+
+        $player['state']['police']['officer'] = $current;
+        $this->markStateDirty($player);
+
+        if ($notify && $this->active) {
+            $message = $current
+                ? '^2Police permissions enabled.'
+                : '^1Police permissions removed.';
+            $this->sendMessage($player['ucid'], $message);
+        }
+
+        if (!$current && $this->active) {
+            ButtonManager::removeButtonsByGroup($player['ucid'], self::POLICE_GROUP);
+        }
+    }
+
+    private function determineOfficerStatus(array $player): bool
+    {
+        if (empty($this->officers)) {
+            return false;
+        }
+
+        [$hasTag, $baseName] = $this->extractOfficerBaseName((string)($player['nickname'] ?? ''));
+        if (!$hasTag) {
+            return false;
+        }
+
+        if ($baseName !== '' && in_array($baseName, $this->officers, true)) {
+            return true;
+        }
+
+        $username = strtolower((string)($player['username'] ?? ''));
+        if ($username !== '' && in_array($username, $this->officers, true)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    private function extractOfficerBaseName(string $rawNickname): array
+    {
+        $sanitised = strtolower(trim($this->stripColours($rawNickname)));
+        if ($sanitised === '') {
+            return array(false, '');
+        }
+
+        if (preg_match('/^\[o\]\s*/', $sanitised, $matches) === 1) {
+            $base = trim(substr($sanitised, strlen($matches[0])));
+            return array(true, $base);
+        }
+
+        return array(false, $sanitised);
+    }
+
+    private function stripColours(string $value): string
+    {
+        $stripped = preg_replace('/\^./', '', $value);
+        if ($stripped === null) {
+            return '';
+        }
+
+        return $stripped;
     }
 
     private function defaultAccelerationState(): array
@@ -2980,14 +3079,7 @@ class ServerModes_CruiseSystems
 
     private function isOfficer(array $player): bool
     {
-        $username = strtolower($player['username'] ?? '');
-        if ($username === '') {
-            return false;
-        }
-        if (empty($this->officers)) {
-            return false;
-        }
-        return in_array($username, $this->officers, true);
+        return $this->determineOfficerStatus($player);
     }
 
     private function collectNearbyPlayers(array $officer, float $radius): array

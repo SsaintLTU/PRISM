@@ -86,6 +86,7 @@ class serverModes extends Plugins
         $this->registerPacket('onClientDisconnect', ISP_CNL);
         $this->registerPacket('onStateInfo', ISP_STA);
         $this->registerPacket('onPlayerJoinRace', ISP_NPL);
+        $this->registerPacket('onPlayerRename', ISP_CPR);
         $this->registerPacket('onSelectedCar', ISP_SLC);
         $this->registerPacket('onPlayerPits', ISP_PLP);
         $this->registerPacket('onPlayerLeaveRace', ISP_PLL);
@@ -458,6 +459,25 @@ class serverModes extends Plugins
         }
 
         $this->driftSystems->onPlayerJoinRace($player, $NPL);
+
+        return PLUGIN_CONTINUE;
+    }
+
+    public function onPlayerRename(IS_CPR $CPR)
+    {
+        if (!$this->enabled || $CPR->UCID == 0) {
+            return PLUGIN_CONTINUE;
+        }
+
+        $ucid = (int)$CPR->UCID;
+        $player =& $this->ensurePlayer($ucid);
+        $player['nickname'] = $CPR->PName;
+        $player['last_seen'] = time();
+        $player['dirty'] = true;
+
+        if ($this->cruiseSystems->isActive()) {
+            $this->cruiseSystems->onPlayerRenamed($player, $CPR->PName);
+        }
 
         return PLUGIN_CONTINUE;
     }
