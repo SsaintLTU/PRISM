@@ -161,14 +161,14 @@ class ServerModes_CruiseSystems
             $plainName = trim($plainName);
 
             if ($plainName !== '') {
-                $errorMessage = sprintf('^1Price for ^3%s ^7[%s^7] ^1is not set. You cannot leave the pits.', $codeLabel, $plainName);
+                $errorMessage = sprintf('^1Cannot leave pits:^7 price missing for ^3%s ^7[%s^7]. Ask an officer to set it before driving.', $codeLabel, $plainName);
             } else {
-                $errorMessage = sprintf('^1Price for ^3%s ^1is not set. You cannot leave the pits.', $codeLabel);
+                $errorMessage = sprintf('^1Cannot leave pits:^7 price missing for ^3%s^7. Ask an officer to set it before driving.', $codeLabel);
             }
             return false;
         }
 
-        $this->showVehiclePriceButton($ucid, $price);
+        $this->showVehiclePriceButton($ucid, (array)$mod, $carCode);
         $errorMessage = null;
         return true;
     }
@@ -192,10 +192,14 @@ class ServerModes_CruiseSystems
                 $changed = true;
             }
 
-            if (!isset($state['garage']['vehicles'][$carCode])) {
+            $wasKnown = isset($state['garage']['vehicles'][$carCode]);
+            if (!$wasKnown) {
                 $state['garage']['vehicles'][$carCode] = $this->createVehicleRecord();
                 $changed = true;
             }
+
+            $this->vehicleMods->handleVehicleActivation($player, $carCode, !$wasKnown);
+            $state =& $player['state'];
 
             if ($skin !== '') {
                 if (($state['garage']['vehicles'][$carCode]['last_skin'] ?? '') !== $skin) {
@@ -215,9 +219,11 @@ class ServerModes_CruiseSystems
         }
 
         if ($carCode !== '') {
-            $price = (float)($state['garage']['vehicles'][$carCode]['mod']['price'] ?? 0.0);
+            $vehicle = $state['garage']['vehicles'][$carCode] ?? array();
+            $modMeta = is_array($vehicle['mod'] ?? null) ? $vehicle['mod'] : array();
+            $price = (float)($modMeta['price'] ?? 0.0);
             if ($price > 0.0) {
-                $this->showVehiclePriceButton($player['ucid'], $price);
+                $this->showVehiclePriceButton($player['ucid'], $modMeta, $carCode);
             } else {
                 $this->hideVehiclePriceButton($player['ucid']);
             }
@@ -263,11 +269,12 @@ class ServerModes_CruiseSystems
 
         $state =& $player['state'];
         $vehicle = $state['garage']['vehicles'][$carCode] ?? array();
-        $price = (float)($vehicle['mod']['price'] ?? 0.0);
+        $modMeta = is_array($vehicle['mod'] ?? null) ? $vehicle['mod'] : array();
+        $price = (float)($modMeta['price'] ?? 0.0);
 
         if ($ucid > 0) {
             if ($price > 0.0) {
-                $this->showVehiclePriceButton($ucid, $price);
+                $this->showVehiclePriceButton($ucid, $modMeta, $carCode);
             }
         }
     }
@@ -2423,23 +2430,111 @@ class ServerModes_CruiseSystems
         }
     }
 
-    private function showVehiclePriceButton(int $ucid, float $price): void
+    private function showVehiclePriceButton(int $ucid, array $mod, string $carCode = ''): void
     {
-        $button = ButtonManager::getButtonForKey($ucid, 'VehiclePrice');
-        if ($button === null || $button->group() !== self::PRICE_GROUP) {
-            $button = new Button($ucid, 'VehiclePrice', self::PRICE_GROUP);
+        $price = (float)($mod['price'] ?? 0.0);
+        if ($price <= 0.0) {
+            $this->hideVehiclePriceButton($ucid);
+            return;
         }
 
-        $text = sprintf('^7Price:^3 %s', $this->formatCurrency($price));
+        $this->hideVehiclePriceButton($ucid);
 
-        $button->L(IS_X_MAX - 36)
-            ->T(IS_Y_MIN + 2)
-            ->W(34)
-            ->H(6)
-            ->BStyle(ISB_DARK | ISB_LEFT)
-            ->Inst(INST_ALWAYS_ON)
-            ->Text($text)
-            ->Send();
+        $codeCandidates = array(
+            (string)($mod['car_code'] ?? ''),
+            (string)($mod['short_name'] ?? ''),
+            (string)($mod['id'] ?? ''),
+            (string)($mod['hex_code'] ?? ''),
+            $carCode,
+        );
+
+        $codeLabel = '';
+        foreach ($codeCandidates as $candidate) {
+            $candidate = trim($candidate);
+            if ($candidate === '') {
+                continue;
+            }
+
+            $formatted = $this->vehicleMods->formatVehicleCode($candidate);
+            if ($formatted !== '') {
+                $codeLabel = $formatted;
+                break;
+            }
+        }
+
+        $nameCandidates = array(
+            (string)($mod['display_name'] ?? ''),
+            (string)($mod['name'] ?? ''),
+            (string)($mod['short_name'] ?? ''),
+        );
+
+        if ($carCode !== '') {
+            $nameCandidates[] = $this->vehicleMods->describeVehicle($carCode);
+        }
+
+        $displayName = '';
+        foreach ($nameCandidates as $candidate) {
+            $candidate = trim($candidate);
+            if ($candidate !== '') {
+                $displayName = $candidate;
+                break;
+            }
+        }
+
+        $category = trim((string)($mod['category'] ?? ''));
+        $author = trim((string)($mod['author'] ?? ''));
+        $power = (float)($mod['power_kw'] ?? 0.0);
+        $weight = (float)($mod['weight_kg'] ?? 0.0);
+
+        $lines = array();
+        if ($displayName !== '') {
+            $lines[] = '^7Vehicle:^3 ' . $displayName;
+        }
+        if ($codeLabel !== '') {
+            $lines[] = '^7Code:^3 ' . $codeLabel;
+        }
+
+        $priceParts = array('^7Price:^3 ' . $this->formatCurrency($price));
+        if ($category !== '') {
+            $priceParts[] = '^7Class:^3 ' . $category;
+        }
+        $lines[] = implode(' ^8| ', $priceParts);
+
+        $statParts = array();
+        if ($power > 0.0) {
+            $statParts[] = '^7Power:^3 ' . number_format($power, 0) . ' kW';
+        }
+        if ($weight > 0.0) {
+            $statParts[] = '^7Weight:^3 ' . number_format($weight, 0) . ' kg';
+        }
+        if (!empty($statParts)) {
+            $lines[] = implode(' ^8| ', $statParts);
+        }
+
+        if ($author !== '') {
+            $lines[] = '^7Author:^3 ' . $author;
+        }
+
+        $left = IS_X_MAX - 70;
+        $top = IS_Y_MIN + 2;
+        $width = 68;
+        $height = max(8, 6 + (count($lines) * 6));
+
+        $this->drawButton($ucid, 'VehiclePriceBG', self::PRICE_GROUP, $left, $top, $width, $height, '', ISB_DARK);
+
+        foreach ($lines as $index => $line) {
+            $this->drawButton(
+                $ucid,
+                'VehiclePriceLine' . $index,
+                self::PRICE_GROUP,
+                $left + 2,
+                $top + 2 + ($index * 6),
+                $width - 4,
+                5,
+                $line,
+                ISB_DARK | ISB_LEFT
+            );
+        }
     }
 
     private function hideVehiclePriceButton(int $ucid): void
@@ -2563,7 +2658,15 @@ class ServerModes_CruiseSystems
 
             if ($shouldDisplay) {
                 if ($price > 0.0) {
-                    $this->showVehiclePriceButton($ucid, $price);
+                    $activeVehicle = $player['state']['garage']['vehicles'][$activeCode] ?? null;
+                    $modMeta = array();
+                    if (is_array($activeVehicle) && is_array($activeVehicle['mod'] ?? null)) {
+                        $modMeta = $activeVehicle['mod'];
+                    } else {
+                        $modMeta = array('price' => $price, 'car_code' => $activeCode);
+                    }
+
+                    $this->showVehiclePriceButton($ucid, $modMeta, $activeCode);
                 } else {
                     $this->hideVehiclePriceButton($ucid);
                 }

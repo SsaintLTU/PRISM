@@ -86,7 +86,9 @@ class ServerModes_VehicleMods
             $newMeta = array(
                 'id' => $mod['id'],
                 'name' => $mod['display_name'],
+                'display_name' => $mod['display_name'],
                 'short_name' => $mod['short_name'],
+                'car_code' => $mod['car_code'],
                 'category' => $mod['category'],
                 'author' => $mod['author'],
                 'power_kw' => (float)$mod['power_kw'],
