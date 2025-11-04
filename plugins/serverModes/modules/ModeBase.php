@@ -34,6 +34,10 @@ abstract class ServerModes_Mode
     {
     }
 
+    public function onClientInfo(array &$player, IS_NCI $packet): void
+    {
+    }
+
     public function onPlayerDisconnected(array &$player): void
     {
     }

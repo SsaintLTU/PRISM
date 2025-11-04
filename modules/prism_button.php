@@ -13,17 +13,28 @@ class Button extends IS_BTN
     public static $TO_ALL = 255;
     public static $TO_LOCAL = 0;
 
-    public function __construct($UCID = 0, $key = NULL, $group = NULL)
+    public function __construct($UCID = 0, $key = NULL, $group = NULL, $inst = NULL)
     {
         $this->key = $key;
         $this->group = $group;
         $this->UCID = $UCID;
         $this->ClickID = -1;
+        if ($inst !== NULL)
+        {
+            $this->Inst = $inst;
+        }
     }
 
     public function send($hostId = NULL)
     {
-        $id = ButtonManager::registerButton($this, $hostId, $this->key, $this->group);
+        if ($this->Inst !== NULL)
+        {
+            $id = ButtonManager::registerButton($this, $hostId, $this->key, $this->group, $this->Inst);
+        }
+        else
+        {
+            $id = ButtonManager::registerButton($this, $hostId, $this->key, $this->group);
+        }
 
         if ($id !== false)
         {
@@ -107,5 +118,26 @@ class Button extends IS_BTN
     public function group()
     {
         return $this->group;
+    }
+
+    public function setKey($key)
+    {
+        $this->key = $key;
+
+        return $this;
+    }
+
+    public function setGroup($group)
+    {
+        $this->group = $group;
+
+        return $this;
+    }
+
+    public function setInst($inst)
+    {
+        $this->Inst = $inst;
+
+        return $this;
     }
 }

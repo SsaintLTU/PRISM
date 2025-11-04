@@ -35,6 +35,13 @@ class ServerModes_ModeCruise extends ServerModes_Mode
         }
     }
 
+    public function onClientInfo(array &$player, IS_NCI $packet): void
+    {
+        if ($this->systems) {
+            $this->systems->onClientInfo($player, $packet);
+        }
+    }
+
     public function onPlayerDisconnected(array &$player): void
     {
         if ($this->systems) {
