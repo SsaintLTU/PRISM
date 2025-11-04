@@ -1,6 +1,7 @@
 <?php
 class ServerModes_CruiseSystems
 {
+    private const WELCOME_GROUP = 'CruiseWelcome';
     private const HUD_GROUP = 'CruiseHUD';
     private const BANK_GROUP = 'CruiseBank';
     private const TELEPORT_GROUP = 'CruiseTeleport';
@@ -25,17 +26,30 @@ class ServerModes_CruiseSystems
     private array $dailyLeaderboardCache = array();
     private int $dailyLeaderboardLimit = 5;
     private int $dailyLeaderboardTtl = 30;
+    private array $welcomeConfig = array();
+    private array $welcomeStrings = array();
 
     public function __construct(serverModes $plugin, ServerModes_VehicleMods $vehicleMods, array $config = array())
     {
         $this->plugin = $plugin;
         $this->vehicleMods = $vehicleMods;
+        $this->welcomeStrings = $this->getDefaultWelcomeStrings();
         $this->applyConfig($config);
     }
 
     public function applyConfig(array $config): void
     {
         $this->config = array_replace_recursive($this->config, $config);
+        $languageFiles = array();
+        if (isset($this->config['ui']['welcome_languages']) && is_array($this->config['ui']['welcome_languages'])) {
+            $languageFiles = $this->config['ui']['welcome_languages'];
+        } elseif (isset($this->config['ui']['languages']) && is_array($this->config['ui']['languages'])) {
+            $languageFiles = $this->config['ui']['languages'];
+        }
+
+        $baseStrings = $this->getDefaultWelcomeStrings();
+        $this->welcomeStrings = $this->loadWelcomeStrings($languageFiles, $baseStrings);
+        $this->welcomeConfig = $this->normaliseWelcomeConfig($this->config['ui']['welcome'] ?? array());
         $this->teleports = $this->parseTeleports($this->config['teleports'] ?? array());
         $this->trafficChecks = $this->parseTrafficChecks($this->config['traffic_checks'] ?? array());
         $this->jobs = $this->parseJobs($this->config['jobs'] ?? array());
@@ -76,6 +90,36 @@ class ServerModes_CruiseSystems
         $this->hudRendered[$player['ucid']] = false;
     }
 
+    public function onClientInfo(array &$player, IS_NCI $packet): void
+    {
+        if (!$this->active) {
+            return;
+        }
+
+        $this->initialisePlayerState($player);
+
+        $welcome =& $player['state']['ui']['welcome'];
+        if (!is_array($welcome)) {
+            $welcome = array('visible' => true);
+            $this->markStateDirty($player);
+        } else {
+            if (!array_key_exists('visible', $welcome) || !$welcome['visible']) {
+                $welcome['visible'] = true;
+                $this->markStateDirty($player);
+            }
+        }
+
+        if (!isset($player['state']['preferences']) || !is_array($player['state']['preferences'])) {
+            $player['state']['preferences'] = array('language' => 'auto');
+            $this->markStateDirty($player);
+        } elseif (!isset($player['state']['preferences']['language'])) {
+            $player['state']['preferences']['language'] = 'auto';
+            $this->markStateDirty($player);
+        }
+
+        $this->renderWelcomeHud($player);
+    }
+
     public function onPlayerDisconnected(array &$player): void
     {
         $ucid = $player['ucid'] ?? null;
@@ -90,6 +134,7 @@ class ServerModes_CruiseSystems
         ButtonManager::removeButtonsByGroup($ucid, self::POLICE_GROUP);
         ButtonManager::removeButtonsByGroup($ucid, self::AFK_GROUP);
         ButtonManager::removeButtonsByGroup($ucid, self::DAILY_GROUP);
+        ButtonManager::removeButtonsByGroup($ucid, self::WELCOME_GROUP);
         unset($this->hudRendered[$ucid]);
         $this->removeAfkQueueEntry($ucid);
     }
@@ -287,6 +332,7 @@ class ServerModes_CruiseSystems
             }
 
             $this->initialisePlayerState($player);
+            $this->renderWelcomeHud($player);
             $this->updateHud($player);
             $this->tickAfk($player);
             $this->tickSalary($player);
@@ -403,7 +449,7 @@ class ServerModes_CruiseSystems
             array('key' => 'Salary', 'label' => "Collect salary ({$salaryLabel})", 'style' => ISB_DARK | ISB_BLUE, 'action' => 'salary'),
         );
 
-        $btnWidth = 26;
+        $btnWidth = 24;
         $gap = 3;
         $startLeft = $left + (int)(($width - ((count($buttons) * $btnWidth) + ((count($buttons) - 1) * $gap))) / 2);
         $rowTop = $top + 34;
@@ -474,6 +520,59 @@ class ServerModes_CruiseSystems
                 $this->offsetDailyPanel($player, 3, 0);
                 break;
         }
+
+        $this->updateHud($player);
+    }
+
+    public function handleWelcomeAction(int $ucid, string $action, ?string $choice = null): void
+    {
+        if (!$this->active) {
+            return;
+        }
+
+        $player =& $this->plugin->getPlayerRecord($ucid);
+        $this->initialisePlayerState($player);
+
+        $welcome =& $player['state']['ui']['welcome'];
+        if (!is_array($welcome)) {
+            $welcome = array('visible' => true);
+            $this->markStateDirty($player);
+        }
+
+        if (!isset($player['state']['preferences']) || !is_array($player['state']['preferences'])) {
+            $player['state']['preferences'] = array('language' => 'auto');
+            $this->markStateDirty($player);
+        }
+
+        $preferences =& $player['state']['preferences'];
+
+        switch ($action) {
+            case 'language':
+                $valid = array('auto', 'lt', 'en');
+                $selection = strtolower((string)$choice);
+                if (!in_array($selection, $valid, true)) {
+                    $selection = 'auto';
+                }
+                if (($preferences['language'] ?? 'auto') !== $selection) {
+                    $preferences['language'] = $selection;
+                    $this->markStateDirty($player);
+                }
+                break;
+            case 'close':
+                if (!empty($welcome['visible'])) {
+                    $welcome['visible'] = false;
+                    $this->markStateDirty($player);
+                }
+                break;
+            case 'show':
+                if (empty($welcome['visible'])) {
+                    $welcome['visible'] = true;
+                    $this->markStateDirty($player);
+                }
+                break;
+        }
+
+        $this->renderWelcomeHud($player);
     }
 
     public function handleBankAction(int $ucid, string $action): void
@@ -1127,6 +1226,163 @@ class ServerModes_CruiseSystems
         $this->hudRendered[$ucid] = true;
     }
 
+    private function renderWelcomeHud(array &$player): void
+    {
+        $ucid = $player['ucid'] ?? 0;
+        if ($ucid === 0) {
+            return;
+        }
+
+        $state =& $player['state'];
+        if (!isset($state['ui']['welcome']) || !is_array($state['ui']['welcome'])) {
+            $state['ui']['welcome'] = array('visible' => true);
+            $this->markStateDirty($player);
+        } else {
+            $defaults = array('visible' => true);
+            $merged = array_replace($defaults, $state['ui']['welcome']);
+            if ($merged !== $state['ui']['welcome']) {
+                $state['ui']['welcome'] = $merged;
+                $this->markStateDirty($player);
+            }
+        }
+
+        if (!isset($state['preferences']) || !is_array($state['preferences'])) {
+            $state['preferences'] = array('language' => 'auto');
+            $this->markStateDirty($player);
+        } elseif (!isset($state['preferences']['language'])) {
+            $state['preferences']['language'] = 'auto';
+            $this->markStateDirty($player);
+        }
+
+        $welcome =& $state['ui']['welcome'];
+        $preference = strtolower((string)($state['preferences']['language'] ?? 'auto'));
+        if (!in_array($preference, array('auto', 'lt', 'en'), true)) {
+            $preference = 'auto';
+            $state['preferences']['language'] = 'auto';
+            $this->markStateDirty($player);
+        }
+
+        ButtonManager::removeButtonsByGroup($ucid, self::WELCOME_GROUP);
+
+        $language = $this->resolveWelcomeLanguage($player);
+        $strings = $this->getWelcomeStrings($language);
+
+        if (empty($welcome['visible'])) {
+            $this->drawButton(
+                $ucid,
+                'WelcomeShow',
+                self::WELCOME_GROUP,
+                0,
+                164,
+                36,
+                6,
+                $strings['show_label'],
+                ISB_DARK | ISB_CLICK | ISB_LEFT,
+                array($ucid, 'welcome', 'show')
+            );
+            return;
+        }
+
+        $serverName = $this->getWelcomeServerName($language);
+        $playerName = $this->getWelcomePlayerName($player);
+        $ipAddress = $player['ip_address'] ?? 'unknown';
+        $origin = $this->describeOriginForPlayer($player, $language);
+        $connectionLine = sprintf($strings['connection_line'], $ipAddress, $origin);
+
+        if ($preference === 'lt') {
+            $modeValue = $strings['language_mode_lt'];
+        } elseif ($preference === 'en') {
+            $modeValue = $strings['language_mode_en'];
+        } else {
+            $modeValue = sprintf($strings['language_mode_auto'], $this->getLanguageDisplayName($language, $language));
+        }
+        $modeLine = sprintf($strings['language_mode_label'], $modeValue);
+
+        $title = sprintf($strings['title'], $serverName);
+        $subtitle = sprintf($strings['subtitle'], $playerName);
+
+        $rules = $this->welcomeConfig['rules'][$language] ?? array();
+        $updates = $this->welcomeConfig['updates'][$language] ?? array();
+        $rowCount = max(count($rules), count($updates));
+        if ($rowCount === 0) {
+            $rowCount = 3;
+        }
+
+        $width = 120;
+        $left = 40;
+        $top = 40;
+        $headerHeight = 24;
+        $bodyHeight = 12 + ($rowCount * 5);
+        $footerHeight = 12;
+        $height = $headerHeight + $bodyHeight + $footerHeight;
+
+        $this->drawButton($ucid, 'WelcomeBG', self::WELCOME_GROUP, $left, $top, $width, $height, '', ISB_DARK);
+        $this->drawButton($ucid, 'WelcomeTitle', self::WELCOME_GROUP, $left + 2, $top + 2, $width - 18, 6, $title, ISB_LIGHT | ISB_LEFT);
+        $this->drawButton(
+            $ucid,
+            'WelcomeClose',
+            self::WELCOME_GROUP,
+            $left + $width - 14,
+            $top + 2,
+            12,
+            6,
+            $strings['close_label'],
+            ISB_DARK | ISB_RED | ISB_CLICK,
+            array($ucid, 'welcome', 'close')
+        );
+        $this->drawButton($ucid, 'WelcomeSubtitle', self::WELCOME_GROUP, $left + 2, $top + 8, $width - 4, 5, $subtitle, ISB_DARK | ISB_LEFT);
+        $this->drawButton($ucid, 'WelcomeConnection', self::WELCOME_GROUP, $left + 2, $top + 14, $width - 4, 5, $connectionLine, ISB_DARK | ISB_LEFT);
+        $this->drawButton($ucid, 'WelcomeMode', self::WELCOME_GROUP, $left + 2, $top + 20, $width - 4, 5, $modeLine, ISB_DARK | ISB_LEFT);
+
+        $columnWidth = (int)(($width - 6) / 2);
+        $leftColumn = $left + 2;
+        $rightColumn = $left + 2 + $columnWidth + 2;
+        $bodyTop = $top + 28;
+
+        $this->drawButton($ucid, 'WelcomeRulesTitle', self::WELCOME_GROUP, $leftColumn, $bodyTop, $columnWidth, 5, $strings['rules_title'], ISB_DARK | ISB_YELLOW | ISB_LEFT);
+        $this->drawButton($ucid, 'WelcomeUpdatesTitle', self::WELCOME_GROUP, $rightColumn, $bodyTop, $columnWidth, 5, $strings['updates_title'], ISB_DARK | ISB_YELLOW | ISB_LEFT);
+
+        for ($i = 0; $i < $rowCount; $i++) {
+            $rowTop = $bodyTop + 5 + ($i * 5);
+            $ruleText = $rules[$i] ?? '^8-';
+            $updateText = $updates[$i] ?? '^8-';
+            $this->drawButton($ucid, 'WelcomeRule' . $i, self::WELCOME_GROUP, $leftColumn, $rowTop, $columnWidth, 5, $ruleText, ISB_DARK | ISB_LEFT);
+            $this->drawButton($ucid, 'WelcomeUpdate' . $i, self::WELCOME_GROUP, $rightColumn, $rowTop, $columnWidth, 5, $updateText, ISB_DARK | ISB_LEFT);
+        }
+
+        $langTop = $top + $height - 10;
+        $this->drawButton($ucid, 'WelcomeLangLabel', self::WELCOME_GROUP, $left + 2, $langTop, 40, 5, $strings['language_title'], ISB_DARK | ISB_LEFT);
+
+        $buttons = array(
+            'auto' => $strings['language_buttons']['auto'],
+            'lt' => $strings['language_buttons']['lt'],
+            'en' => $strings['language_buttons']['en'],
+        );
+        $btnWidth = 26;
+        $gap = 2;
+        $index = 0;
+        foreach ($buttons as $key => $label) {
+            $buttonLeft = $left + 44 + ($index * ($btnWidth + $gap));
+            $style = ISB_DARK | ISB_CLICK;
+            if ($preference === $key) {
+                $style |= ISB_LIGHT;
+            }
+            $this->drawButton(
+                $ucid,
+                'WelcomeLang' . ucfirst($key),
+                self::WELCOME_GROUP,
+                $buttonLeft,
+                $langTop,
+                $btnWidth,
+                5,
+                $label,
+                $style,
+                array($ucid, 'welcome', 'language', $key)
+            );
+            $index++;
+        }
+    }
+
     private function renderDailyLeaderboard(array &$player): void
     {
         $ucid = $player['ucid'] ?? 0;
@@ -1182,6 +1438,8 @@ class ServerModes_CruiseSystems
 
             return;
         }
+
+        ButtonManager::removeButtonByKey($ucid, 'DailyCollapsed');
 
         $focusUserId = $player['user_id'] ?? 0;
         $leaderboard = $this->buildDailyLeaderboard($focusUserId, $player);
@@ -1788,6 +2046,7 @@ class ServerModes_CruiseSystems
             ButtonManager::removeButtonsByGroup($ucid, self::POLICE_GROUP);
             ButtonManager::removeButtonsByGroup($ucid, self::AFK_GROUP);
             ButtonManager::removeButtonsByGroup($ucid, self::DAILY_GROUP);
+            ButtonManager::removeButtonsByGroup($ucid, self::WELCOME_GROUP);
         }
         $this->hudRendered = array();
         $this->afkQueue = array();
@@ -1813,6 +2072,132 @@ class ServerModes_CruiseSystems
         }
 
         $button->Send();
+    }
+
+    private function getWelcomePlayerName(array $player): string
+    {
+        $nickname = trim((string)($player['nickname'] ?? ''));
+        if ($nickname !== '') {
+            return $nickname;
+        }
+
+        $username = trim((string)($player['username'] ?? ''));
+        if ($username !== '') {
+            return $username;
+        }
+
+        return 'Driver';
+    }
+
+    private function resolveWelcomeLanguage(array $player): string
+    {
+        $state = $player['state'] ?? array();
+        $preference = strtolower((string)($state['preferences']['language'] ?? 'auto'));
+
+        if ($preference === 'lt' || $preference === 'en') {
+            return $preference;
+        }
+
+        return $this->mapLanguageCodeToPreference((int)($player['language'] ?? LANG_EN));
+    }
+
+    private function mapLanguageCodeToPreference(int $code): string
+    {
+        if ($code === LANG_LT) {
+            return 'lt';
+        }
+
+        return 'en';
+    }
+
+    private function getWelcomeStrings(string $language): array
+    {
+        $language = ($language === 'lt') ? 'lt' : 'en';
+
+        $defaults = $this->welcomeStrings['en'] ?? array();
+        $strings = $this->welcomeStrings[$language] ?? $defaults;
+
+        $defaultButtons = $defaults['language_buttons'] ?? array(
+            'auto' => '^3Auto',
+            'lt' => '^3Lithuanian',
+            'en' => '^3English',
+        );
+        $buttons = $strings['language_buttons'] ?? array();
+        if (!is_array($buttons)) {
+            $buttons = array();
+        }
+        $buttons = array_replace($defaultButtons, $buttons);
+
+        return array(
+            'title' => $strings['title'] ?? ($defaults['title'] ?? '^3Welcome to %s'),
+            'subtitle' => $strings['subtitle'] ?? ($defaults['subtitle'] ?? '^7Hello ^3%s^7, enjoy your stay!'),
+            'rules_title' => $strings['rules_title'] ?? ($defaults['rules_title'] ?? '^8Rules'),
+            'updates_title' => $strings['updates_title'] ?? ($defaults['updates_title'] ?? '^8Updates'),
+            'language_title' => $strings['language_title'] ?? ($defaults['language_title'] ?? '^7Language:'),
+            'language_buttons' => array(
+                'auto' => $buttons['auto'] ?? ($defaultButtons['auto'] ?? '^3Auto'),
+                'lt' => $buttons['lt'] ?? ($defaultButtons['lt'] ?? '^3Lithuanian'),
+                'en' => $buttons['en'] ?? ($defaultButtons['en'] ?? '^3English'),
+            ),
+            'close_label' => $strings['close_label'] ?? ($defaults['close_label'] ?? '^1X'),
+            'show_label' => $strings['show_label'] ?? ($defaults['show_label'] ?? '^2Welcome'),
+            'connection_line' => $strings['connection_line'] ?? ($defaults['connection_line'] ?? '^7Connection:^3 %s ^8| ^7Origin:^3 %s'),
+            'language_mode_label' => $strings['language_mode_label'] ?? ($defaults['language_mode_label'] ?? '^7Language mode:^3 %s'),
+            'language_mode_auto' => $strings['language_mode_auto'] ?? ($defaults['language_mode_auto'] ?? '^3Auto (%s)'),
+            'language_mode_lt' => $strings['language_mode_lt'] ?? ($defaults['language_mode_lt'] ?? '^3Lithuanian'),
+            'language_mode_en' => $strings['language_mode_en'] ?? ($defaults['language_mode_en'] ?? '^3English'),
+        );
+    }
+
+    private function getWelcomeServerName(string $language): string
+    {
+        $language = ($language === 'lt') ? 'lt' : 'en';
+        $names = $this->welcomeConfig['server_name'] ?? array();
+        $fallback = $names['en'] ?? 'Cruise City';
+
+        return (string)($names[$language] ?? $fallback);
+    }
+
+    private function getLanguageDisplayName(string $language, string $target): string
+    {
+        $target = ($target === 'lt') ? 'lt' : 'en';
+        $map = array(
+            'en' => array('en' => 'English', 'lt' => 'Anglų'),
+            'lt' => array('en' => 'Lithuanian', 'lt' => 'Lietuvių'),
+        );
+
+        if (!isset($map[$language][$target])) {
+            return $map['en'][$target];
+        }
+
+        return $map[$language][$target];
+    }
+
+    private function describeOriginForPlayer(array $player, string $language): string
+    {
+        $language = ($language === 'lt') ? 'lt' : 'en';
+        $code = (int)($player['language'] ?? LANG_EN);
+
+        $map = array(
+            LANG_LT => array('en' => 'Lithuania', 'lt' => 'Lietuva'),
+            LANG_LV => array('en' => 'Latvia', 'lt' => 'Latvija'),
+            LANG_ET => array('en' => 'Estonia', 'lt' => 'Estija'),
+            LANG_PL => array('en' => 'Poland', 'lt' => 'Lenkija'),
+            LANG_RU => array('en' => 'Russia', 'lt' => 'Rusija'),
+            LANG_UK => array('en' => 'Ukraine', 'lt' => 'Ukraina'),
+            LANG_BG => array('en' => 'Bulgaria', 'lt' => 'Bulgarija'),
+            LANG_DE => array('en' => 'Germany', 'lt' => 'Vokietija'),
+            LANG_ES => array('en' => 'Spain', 'lt' => 'Ispanija'),
+            LANG_IT => array('en' => 'Italy', 'lt' => 'Italija'),
+            LANG_FR => array('en' => 'France', 'lt' => 'Prancūzija'),
+            LANG_SV => array('en' => 'Sweden', 'lt' => 'Švedija'),
+            LANG_FI => array('en' => 'Finland', 'lt' => 'Suomija'),
+            LANG_EN => array('en' => 'International', 'lt' => 'Tarptautinis'),
+        );
+
+        $entry = $map[$code] ?? array('en' => 'International', 'lt' => 'Tarptautinis');
+
+        return (string)($entry[$language] ?? $entry['en']);
     }
 
     private function initialisePlayerState(array &$player): void
@@ -1866,6 +2251,9 @@ class ServerModes_CruiseSystems
                 'licenses' => 0,
                 'lap_count' => 0,
             ),
+            'preferences' => array(
+                'language' => 'auto',
+            ),
             'jobs' => array(
                 'active' => null,
                 'history' => array(),
@@ -1888,6 +2276,9 @@ class ServerModes_CruiseSystems
                     'left' => 4,
                     'top' => 120,
                     'row_keys' => array(),
+                ),
+                'welcome' => array(
+                    'visible' => true,
                 ),
             ),
             'afk' => array(
@@ -2007,6 +2398,266 @@ class ServerModes_CruiseSystems
             }
         }
         return $list;
+    }
+
+    private function normaliseWelcomeConfig(array $config): array
+    {
+        $defaultServerNameEn = (string)($this->welcomeStrings['en']['server_name'] ?? 'Cruise City');
+        $defaultServerNameLt = (string)($this->welcomeStrings['lt']['server_name'] ?? $defaultServerNameEn);
+        $defaultTitleEn = (string)($this->welcomeStrings['en']['title'] ?? '^3Welcome to %s');
+        $defaultTitleLt = (string)($this->welcomeStrings['lt']['title'] ?? '^3Sveiki atvykę į %s');
+        $defaultSubtitleEn = (string)($this->welcomeStrings['en']['subtitle'] ?? '^7Hello ^3%s^7, enjoy your stay!');
+        $defaultSubtitleLt = (string)($this->welcomeStrings['lt']['subtitle'] ?? '^7Labas ^3%s^7, gero žaidimo!');
+        $defaultRulesEn = $this->welcomeStrings['en']['rules'] ?? array(
+            '^7Respect other drivers.',
+            '^7Follow the traffic rules.',
+            '^7Use your indicators at junctions.',
+        );
+        $defaultRulesLt = $this->welcomeStrings['lt']['rules'] ?? $defaultRulesEn;
+        $defaultUpdatesEn = $this->welcomeStrings['en']['updates'] ?? array(
+            '^7Daily leaderboard resets at midnight.',
+            '^7Visit the bank to collect your salary.',
+            '^7Police patrols are active in the city.',
+        );
+        $defaultUpdatesLt = $this->welcomeStrings['lt']['updates'] ?? $defaultUpdatesEn;
+
+        $defaults = array(
+            'server_name' => array('en' => $defaultServerNameEn, 'lt' => $defaultServerNameLt),
+            'title' => array('en' => $defaultTitleEn, 'lt' => $defaultTitleLt),
+            'subtitle' => array('en' => $defaultSubtitleEn, 'lt' => $defaultSubtitleLt),
+            'rules' => array('en' => $defaultRulesEn, 'lt' => $defaultRulesLt),
+            'updates' => array('en' => $defaultUpdatesEn, 'lt' => $defaultUpdatesLt),
+        );
+
+        $result = $defaults;
+
+        if (isset($config['server_name']) && is_string($config['server_name'])) {
+            $result['server_name']['en'] = $config['server_name'];
+            $result['server_name']['lt'] = $config['server_name'];
+        }
+        if (isset($config['server_name_en']) && is_string($config['server_name_en'])) {
+            $result['server_name']['en'] = $config['server_name_en'];
+        }
+        if (isset($config['server_name_lt']) && is_string($config['server_name_lt'])) {
+            $result['server_name']['lt'] = $config['server_name_lt'];
+        }
+
+        $titleConfig = $config['title'] ?? array();
+        $subtitleConfig = $config['subtitle'] ?? array();
+
+        $titleEn = $config['title_en'] ?? ($titleConfig['en'] ?? null);
+        if (is_string($titleEn) && $titleEn !== '') {
+            $result['title']['en'] = $titleEn;
+        }
+        $titleLt = $config['title_lt'] ?? ($titleConfig['lt'] ?? null);
+        if (is_string($titleLt) && $titleLt !== '') {
+            $result['title']['lt'] = $titleLt;
+        }
+
+        $subtitleEn = $config['subtitle_en'] ?? ($subtitleConfig['en'] ?? null);
+        if (is_string($subtitleEn) && $subtitleEn !== '') {
+            $result['subtitle']['en'] = $subtitleEn;
+        }
+        $subtitleLt = $config['subtitle_lt'] ?? ($subtitleConfig['lt'] ?? null);
+        if (is_string($subtitleLt) && $subtitleLt !== '') {
+            $result['subtitle']['lt'] = $subtitleLt;
+        }
+
+        $rulesConfig = $config['rules'] ?? array();
+        $updatesConfig = $config['updates'] ?? array();
+
+        $result['rules']['en'] = $this->normaliseTextArray($config['rules_en'] ?? ($rulesConfig['en'] ?? null), $defaults['rules']['en']);
+        $result['rules']['lt'] = $this->normaliseTextArray($config['rules_lt'] ?? ($rulesConfig['lt'] ?? null), $defaults['rules']['lt']);
+        $result['updates']['en'] = $this->normaliseTextArray($config['updates_en'] ?? ($updatesConfig['en'] ?? null), $defaults['updates']['en']);
+        $result['updates']['lt'] = $this->normaliseTextArray($config['updates_lt'] ?? ($updatesConfig['lt'] ?? null), $defaults['updates']['lt']);
+
+        return $result;
+    }
+
+    private function getDefaultWelcomeStrings(): array
+    {
+        return array(
+            'en' => array(
+                'server_name' => 'Cruise City',
+                'title' => '^3Welcome to %s',
+                'subtitle' => '^7Hello ^3%s^7, enjoy your stay!',
+                'rules_title' => '^8Rules',
+                'updates_title' => '^8Updates',
+                'language_title' => '^7Language:',
+                'language_buttons' => array(
+                    'auto' => '^3Auto',
+                    'lt' => '^3Lithuanian',
+                    'en' => '^3English',
+                ),
+                'close_label' => '^1X',
+                'show_label' => '^2Welcome',
+                'connection_line' => '^7Connection:^3 %s ^8| ^7Origin:^3 %s',
+                'language_mode_label' => '^7Language mode:^3 %s',
+                'language_mode_auto' => '^3Auto (%s)',
+                'language_mode_lt' => '^3Lithuanian',
+                'language_mode_en' => '^3English',
+                'rules' => array(
+                    '^7Respect other drivers.',
+                    '^7Follow the traffic rules.',
+                    '^7Use your indicators at junctions.',
+                ),
+                'updates' => array(
+                    '^7Daily leaderboard resets at midnight.',
+                    '^7Visit the bank to collect your salary.',
+                    '^7Police patrols are active in the city.',
+                ),
+            ),
+            'lt' => array(
+                'server_name' => 'Cruise City',
+                'title' => '^3Sveiki atvykę į %s',
+                'subtitle' => '^7Labas ^3%s^7, gero žaidimo!',
+                'rules_title' => '^8Taisyklės',
+                'updates_title' => '^8Naujienos',
+                'language_title' => '^7Kalba:',
+                'language_buttons' => array(
+                    'auto' => '^3Auto',
+                    'lt' => '^3Lietuvių',
+                    'en' => '^3Anglų',
+                ),
+                'close_label' => '^1X',
+                'show_label' => '^2Sveiki',
+                'connection_line' => '^7Ryšys:^3 %s ^8| ^7Kilmė:^3 %s',
+                'language_mode_label' => '^7Kalbos režimas:^3 %s',
+                'language_mode_auto' => '^3Auto (%s)',
+                'language_mode_lt' => '^3Lietuvių',
+                'language_mode_en' => '^3Anglų',
+                'rules' => array(
+                    '^7Gerbk kitus vairuotojus.',
+                    '^7Laikykis eismo taisyklių.',
+                    '^7Sankryžose naudok posūkių signalus.',
+                ),
+                'updates' => array(
+                    '^7Dienos topas atsinaujina vidurnaktį.',
+                    '^7Aplankyk banką atlyginimui atsiimti.',
+                    '^7Policija patruliuoja mieste.',
+                ),
+            ),
+        );
+    }
+
+    private function loadWelcomeStrings(array $languageFiles, array $base): array
+    {
+        $result = $base;
+
+        foreach ($languageFiles as $code => $file) {
+            if (!is_string($file) || trim($file) === '') {
+                continue;
+            }
+
+            $code = strtolower(trim((string)$code));
+            if ($code === '') {
+                continue;
+            }
+
+            $path = $this->resolveConfigPath($file);
+            if ($path === '' || !is_file($path)) {
+                continue;
+            }
+
+            $data = parse_ini_file($path, true, INI_SCANNER_RAW);
+            if (!is_array($data)) {
+                continue;
+            }
+
+            if (!isset($result[$code])) {
+                $result[$code] = $result['en'] ?? array();
+            }
+
+            $result[$code] = $this->mergeWelcomeLanguageData($result[$code], $data);
+        }
+
+        return $result;
+    }
+
+    private function mergeWelcomeLanguageData(array $base, array $data): array
+    {
+        if (isset($data['welcome']) && is_array($data['welcome'])) {
+            foreach ($data['welcome'] as $key => $value) {
+                if (is_string($value) && $value !== '') {
+                    $base[$key] = $value;
+                }
+            }
+        }
+
+        if (isset($data['welcome.language_buttons']) && is_array($data['welcome.language_buttons'])) {
+            $buttons = array();
+            if (isset($base['language_buttons']) && is_array($base['language_buttons'])) {
+                $buttons = $base['language_buttons'];
+            }
+            foreach ($data['welcome.language_buttons'] as $key => $value) {
+                if (is_string($value) && $value !== '') {
+                    $buttons[$key] = $value;
+                }
+            }
+            if (!empty($buttons)) {
+                $base['language_buttons'] = $buttons;
+            }
+        }
+
+        if (isset($data['welcome.rules']) && is_array($data['welcome.rules'])) {
+            $lines = $data['welcome.rules']['line'] ?? ($data['welcome.rules']['rules'] ?? $data['welcome.rules']);
+            $base['rules'] = $this->normaliseTextArray($lines, $base['rules'] ?? array());
+        }
+
+        if (isset($data['welcome.updates']) && is_array($data['welcome.updates'])) {
+            $lines = $data['welcome.updates']['line'] ?? ($data['welcome.updates']['updates'] ?? $data['welcome.updates']);
+            $base['updates'] = $this->normaliseTextArray($lines, $base['updates'] ?? array());
+        }
+
+        return $base;
+    }
+
+    private function resolveConfigPath(string $path): string
+    {
+        $path = trim($path);
+        if ($path === '') {
+            return '';
+        }
+
+        if (preg_match("/^[A-Za-z]:[\\\\\/]/", $path) === 1 || $path[0] === '/' || $path[0] === '\\') {
+            return $path;
+        }
+
+        if (defined('ROOTPATH')) {
+            return rtrim(ROOTPATH, '/\\') . '/' . ltrim($path, '/\\');
+        }
+
+        return $path;
+    }
+
+    private function normaliseTextArray($value, array $fallback): array
+    {
+        if (is_string($value)) {
+            $value = trim($value);
+            if ($value !== '') {
+                return array($value);
+            }
+            return $fallback;
+        }
+
+        if (is_array($value)) {
+            $lines = array();
+            foreach ($value as $line) {
+                if (!is_string($line)) {
+                    continue;
+                }
+                $line = trim($line);
+                if ($line === '') {
+                    continue;
+                }
+                $lines[] = $line;
+            }
+            if (!empty($lines)) {
+                return array_values($lines);
+            }
+        }
+
+        return $fallback;
     }
 
     private function parseTeleports($raw): array

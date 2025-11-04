@@ -38,7 +38,7 @@ class ButtonManager
     private static $buttons = array();
 
     /** Called by Button->send(). Assigns unique clickId. */
-    public static function registerButton(Button $BTN, $hostId = null)
+    public static function registerButton(Button $BTN, $hostId = null, $key = null, $group = null, $inst = null)
     {
         if ($BTN->ClickID != -1)
         {
@@ -47,6 +47,21 @@ class ButtonManager
         }
 
         self::debug();
+
+        if ($key !== null)
+        {
+            $BTN->setKey($key);
+        }
+
+        if ($group !== null)
+        {
+            $BTN->setGroup($group);
+        }
+
+        if ($inst !== null)
+        {
+            $BTN->setInst($inst);
+        }
 
         if ($hostId === NULL)
         {

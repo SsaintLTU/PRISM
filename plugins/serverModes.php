@@ -307,10 +307,16 @@ class serverModes extends Plugins
 
         $player =& $this->ensurePlayer($NCI->UCID);
         $player['user_id'] = (int)$NCI->UserID;
+        $player['language'] = (int)$NCI->Language;
+        $player['ip_address'] = (string)$NCI->IPAddress;
         $player['dirty'] = true;
 
         $this->bootstrapPlayerFromDatabase($NCI->UCID);
         $this->friendManager->onClientInfo($player);
+
+        if ($this->activeMode) {
+            $this->activeMode->onClientInfo($player, $NCI);
+        }
 
         return PLUGIN_CONTINUE;
     }
@@ -574,6 +580,9 @@ class serverModes extends Plugins
                 break;
             case 'daily':
                 $this->cruiseSystems->handleDailyAction($ucid, (string)$action);
+                break;
+            case 'welcome':
+                $this->cruiseSystems->handleWelcomeAction($ucid, (string)$action, is_string($extra) ? $extra : null);
                 break;
             case 'police':
                 if ($action === 'close') {
@@ -932,6 +941,8 @@ class serverModes extends Plugins
                 'user_id' => null,
                 'username' => '',
                 'nickname' => '',
+                'language' => LANG_EN,
+                'ip_address' => '',
                 'host' => $this->activeHost,
                 'mode_key' => $this->activeMode ? $this->activeMode->getKey() : '',
                 'connected_at' => time(),
@@ -1117,6 +1128,39 @@ class serverModes extends Plugins
                 'xp_per_km' => 0.25,
                 'speed_limit' => 0,
                 'penalty_multiplier' => 0.5,
+                'ui' => array(
+                    'welcome_languages' => array(
+                        'en' => 'configs/lang_en.ini',
+                        'lt' => 'configs/lang_lt.ini',
+                    ),
+                    'welcome' => array(
+                        'server_name' => 'Cruise City',
+                        'title_en' => '^3Welcome to %s',
+                        'title_lt' => '^3Sveiki atvykę į %s',
+                        'subtitle_en' => '^7Hello %s! Enjoy the drive.',
+                        'subtitle_lt' => '^7Sveikas, %s! Sėkmės kelyje.',
+                        'rules_en' => array(
+                            '^7Respect other drivers.',
+                            '^7Follow the traffic rules.',
+                            '^7Use your indicators at junctions.',
+                        ),
+                        'rules_lt' => array(
+                            '^7Gerbk kitus vairuotojus.',
+                            '^7Laikykis eismo taisyklių.',
+                            '^7Sankryžose naudok posūkių signalus.',
+                        ),
+                        'updates_en' => array(
+                            '^7Daily leaderboard resets at midnight.',
+                            '^7Visit the bank to collect your salary.',
+                            '^7Police patrols are active in the city.',
+                        ),
+                        'updates_lt' => array(
+                            '^7Dienos topas atsinaujina vidurnaktį.',
+                            '^7Aplankyk banką atlyginimui atsiimti.',
+                            '^7Policija patruliuoja mieste.',
+                        ),
+                    ),
+                ),
             ),
             'mode_drift' => array(
                 'money_per_km' => 5.0,
