@@ -27,17 +27,28 @@ class ServerModes_CruiseSystems
     private int $dailyLeaderboardLimit = 5;
     private int $dailyLeaderboardTtl = 30;
     private array $welcomeConfig = array();
+    private array $welcomeStrings = array();
 
     public function __construct(serverModes $plugin, ServerModes_VehicleMods $vehicleMods, array $config = array())
     {
         $this->plugin = $plugin;
         $this->vehicleMods = $vehicleMods;
+        $this->welcomeStrings = $this->getDefaultWelcomeStrings();
         $this->applyConfig($config);
     }
 
     public function applyConfig(array $config): void
     {
         $this->config = array_replace_recursive($this->config, $config);
+        $languageFiles = array();
+        if (isset($this->config['ui']['welcome_languages']) && is_array($this->config['ui']['welcome_languages'])) {
+            $languageFiles = $this->config['ui']['welcome_languages'];
+        } elseif (isset($this->config['ui']['languages']) && is_array($this->config['ui']['languages'])) {
+            $languageFiles = $this->config['ui']['languages'];
+        }
+
+        $baseStrings = $this->getDefaultWelcomeStrings();
+        $this->welcomeStrings = $this->loadWelcomeStrings($languageFiles, $baseStrings);
         $this->welcomeConfig = $this->normaliseWelcomeConfig($this->config['ui']['welcome'] ?? array());
         $this->teleports = $this->parseTeleports($this->config['teleports'] ?? array());
         $this->trafficChecks = $this->parseTrafficChecks($this->config['traffic_checks'] ?? array());
@@ -1428,6 +1439,8 @@ class ServerModes_CruiseSystems
             return;
         }
 
+        ButtonManager::removeButtonByKey($ucid, 'DailyCollapsed');
+
         $focusUserId = $player['user_id'] ?? 0;
         $leaderboard = $this->buildDailyLeaderboard($focusUserId, $player);
         $rows = $leaderboard['rows'];
@@ -2101,46 +2114,38 @@ class ServerModes_CruiseSystems
     {
         $language = ($language === 'lt') ? 'lt' : 'en';
 
-        if ($language === 'lt') {
-            return array(
-                'title' => '^3Sveiki atvykę į %s',
-                'subtitle' => '^7Labas ^3%s^7, gero žaidimo!',
-                'rules_title' => '^8Taisyklės',
-                'updates_title' => '^8Naujienos',
-                'language_title' => '^7Kalba:',
-                'language_buttons' => array(
-                    'auto' => '^3Auto',
-                    'lt' => '^3Lietuvių',
-                    'en' => '^3Anglų',
-                ),
-                'close_label' => '^1X',
-                'show_label' => '^2Sveiki',
-                'connection_line' => '^7Ryšys:^3 %s ^8| ^7Kilmė:^3 %s',
-                'language_mode_label' => '^7Kalbos režimas:^3 %s',
-                'language_mode_auto' => '^3Auto (%s)',
-                'language_mode_lt' => '^3Lietuvių',
-                'language_mode_en' => '^3Anglų',
-            );
+        $defaults = $this->welcomeStrings['en'] ?? array();
+        $strings = $this->welcomeStrings[$language] ?? $defaults;
+
+        $defaultButtons = $defaults['language_buttons'] ?? array(
+            'auto' => '^3Auto',
+            'lt' => '^3Lithuanian',
+            'en' => '^3English',
+        );
+        $buttons = $strings['language_buttons'] ?? array();
+        if (!is_array($buttons)) {
+            $buttons = array();
         }
+        $buttons = array_replace($defaultButtons, $buttons);
 
         return array(
-            'title' => '^3Welcome to %s',
-            'subtitle' => '^7Hello ^3%s^7, enjoy your stay!',
-            'rules_title' => '^8Rules',
-            'updates_title' => '^8Updates',
-            'language_title' => '^7Language:',
+            'title' => $strings['title'] ?? ($defaults['title'] ?? '^3Welcome to %s'),
+            'subtitle' => $strings['subtitle'] ?? ($defaults['subtitle'] ?? '^7Hello ^3%s^7, enjoy your stay!'),
+            'rules_title' => $strings['rules_title'] ?? ($defaults['rules_title'] ?? '^8Rules'),
+            'updates_title' => $strings['updates_title'] ?? ($defaults['updates_title'] ?? '^8Updates'),
+            'language_title' => $strings['language_title'] ?? ($defaults['language_title'] ?? '^7Language:'),
             'language_buttons' => array(
-                'auto' => '^3Auto',
-                'lt' => '^3Lithuanian',
-                'en' => '^3English',
+                'auto' => $buttons['auto'] ?? ($defaultButtons['auto'] ?? '^3Auto'),
+                'lt' => $buttons['lt'] ?? ($defaultButtons['lt'] ?? '^3Lithuanian'),
+                'en' => $buttons['en'] ?? ($defaultButtons['en'] ?? '^3English'),
             ),
-            'close_label' => '^1X',
-            'show_label' => '^2Welcome',
-            'connection_line' => '^7Connection:^3 %s ^8| ^7Origin:^3 %s',
-            'language_mode_label' => '^7Language mode:^3 %s',
-            'language_mode_auto' => '^3Auto (%s)',
-            'language_mode_lt' => '^3Lithuanian',
-            'language_mode_en' => '^3English',
+            'close_label' => $strings['close_label'] ?? ($defaults['close_label'] ?? '^1X'),
+            'show_label' => $strings['show_label'] ?? ($defaults['show_label'] ?? '^2Welcome'),
+            'connection_line' => $strings['connection_line'] ?? ($defaults['connection_line'] ?? '^7Connection:^3 %s ^8| ^7Origin:^3 %s'),
+            'language_mode_label' => $strings['language_mode_label'] ?? ($defaults['language_mode_label'] ?? '^7Language mode:^3 %s'),
+            'language_mode_auto' => $strings['language_mode_auto'] ?? ($defaults['language_mode_auto'] ?? '^3Auto (%s)'),
+            'language_mode_lt' => $strings['language_mode_lt'] ?? ($defaults['language_mode_lt'] ?? '^3Lithuanian'),
+            'language_mode_en' => $strings['language_mode_en'] ?? ($defaults['language_mode_en'] ?? '^3English'),
         );
     }
 
@@ -2397,34 +2402,31 @@ class ServerModes_CruiseSystems
 
     private function normaliseWelcomeConfig(array $config): array
     {
+        $defaultServerNameEn = (string)($this->welcomeStrings['en']['server_name'] ?? 'Cruise City');
+        $defaultServerNameLt = (string)($this->welcomeStrings['lt']['server_name'] ?? $defaultServerNameEn);
+        $defaultTitleEn = (string)($this->welcomeStrings['en']['title'] ?? '^3Welcome to %s');
+        $defaultTitleLt = (string)($this->welcomeStrings['lt']['title'] ?? '^3Sveiki atvykę į %s');
+        $defaultSubtitleEn = (string)($this->welcomeStrings['en']['subtitle'] ?? '^7Hello ^3%s^7, enjoy your stay!');
+        $defaultSubtitleLt = (string)($this->welcomeStrings['lt']['subtitle'] ?? '^7Labas ^3%s^7, gero žaidimo!');
+        $defaultRulesEn = $this->welcomeStrings['en']['rules'] ?? array(
+            '^7Respect other drivers.',
+            '^7Follow the traffic rules.',
+            '^7Use your indicators at junctions.',
+        );
+        $defaultRulesLt = $this->welcomeStrings['lt']['rules'] ?? $defaultRulesEn;
+        $defaultUpdatesEn = $this->welcomeStrings['en']['updates'] ?? array(
+            '^7Daily leaderboard resets at midnight.',
+            '^7Visit the bank to collect your salary.',
+            '^7Police patrols are active in the city.',
+        );
+        $defaultUpdatesLt = $this->welcomeStrings['lt']['updates'] ?? $defaultUpdatesEn;
+
         $defaults = array(
-            'server_name' => array('en' => 'Cruise City', 'lt' => 'Cruise City'),
-            'title' => array('en' => '^3Welcome to %s', 'lt' => '^3Sveiki atvykę į %s'),
-            'subtitle' => array('en' => '^7Hello ^3%s^7, enjoy your stay!', 'lt' => '^7Labas ^3%s^7, gero žaidimo!'),
-            'rules' => array(
-                'en' => array(
-                    '^7Respect other drivers.',
-                    '^7Follow the traffic rules.',
-                    '^7Use your indicators at junctions.',
-                ),
-                'lt' => array(
-                    '^7Gerbk kitus vairuotojus.',
-                    '^7Laikykis eismo taisyklių.',
-                    '^7Sankryžose naudok posūkių signalus.',
-                ),
-            ),
-            'updates' => array(
-                'en' => array(
-                    '^7Daily leaderboard resets at midnight.',
-                    '^7Visit the bank to collect your salary.',
-                    '^7Police patrols are active in the city.',
-                ),
-                'lt' => array(
-                    '^7Dienos topas atsinaujina vidurnaktį.',
-                    '^7Aplankyk banką atlyginimui atsiimti.',
-                    '^7Policija patruliuoja mieste.',
-                ),
-            ),
+            'server_name' => array('en' => $defaultServerNameEn, 'lt' => $defaultServerNameLt),
+            'title' => array('en' => $defaultTitleEn, 'lt' => $defaultTitleLt),
+            'subtitle' => array('en' => $defaultSubtitleEn, 'lt' => $defaultSubtitleLt),
+            'rules' => array('en' => $defaultRulesEn, 'lt' => $defaultRulesLt),
+            'updates' => array('en' => $defaultUpdatesEn, 'lt' => $defaultUpdatesLt),
         );
 
         $result = $defaults;
@@ -2470,6 +2472,162 @@ class ServerModes_CruiseSystems
         $result['updates']['lt'] = $this->normaliseTextArray($config['updates_lt'] ?? ($updatesConfig['lt'] ?? null), $defaults['updates']['lt']);
 
         return $result;
+    }
+
+    private function getDefaultWelcomeStrings(): array
+    {
+        return array(
+            'en' => array(
+                'server_name' => 'Cruise City',
+                'title' => '^3Welcome to %s',
+                'subtitle' => '^7Hello ^3%s^7, enjoy your stay!',
+                'rules_title' => '^8Rules',
+                'updates_title' => '^8Updates',
+                'language_title' => '^7Language:',
+                'language_buttons' => array(
+                    'auto' => '^3Auto',
+                    'lt' => '^3Lithuanian',
+                    'en' => '^3English',
+                ),
+                'close_label' => '^1X',
+                'show_label' => '^2Welcome',
+                'connection_line' => '^7Connection:^3 %s ^8| ^7Origin:^3 %s',
+                'language_mode_label' => '^7Language mode:^3 %s',
+                'language_mode_auto' => '^3Auto (%s)',
+                'language_mode_lt' => '^3Lithuanian',
+                'language_mode_en' => '^3English',
+                'rules' => array(
+                    '^7Respect other drivers.',
+                    '^7Follow the traffic rules.',
+                    '^7Use your indicators at junctions.',
+                ),
+                'updates' => array(
+                    '^7Daily leaderboard resets at midnight.',
+                    '^7Visit the bank to collect your salary.',
+                    '^7Police patrols are active in the city.',
+                ),
+            ),
+            'lt' => array(
+                'server_name' => 'Cruise City',
+                'title' => '^3Sveiki atvykę į %s',
+                'subtitle' => '^7Labas ^3%s^7, gero žaidimo!',
+                'rules_title' => '^8Taisyklės',
+                'updates_title' => '^8Naujienos',
+                'language_title' => '^7Kalba:',
+                'language_buttons' => array(
+                    'auto' => '^3Auto',
+                    'lt' => '^3Lietuvių',
+                    'en' => '^3Anglų',
+                ),
+                'close_label' => '^1X',
+                'show_label' => '^2Sveiki',
+                'connection_line' => '^7Ryšys:^3 %s ^8| ^7Kilmė:^3 %s',
+                'language_mode_label' => '^7Kalbos režimas:^3 %s',
+                'language_mode_auto' => '^3Auto (%s)',
+                'language_mode_lt' => '^3Lietuvių',
+                'language_mode_en' => '^3Anglų',
+                'rules' => array(
+                    '^7Gerbk kitus vairuotojus.',
+                    '^7Laikykis eismo taisyklių.',
+                    '^7Sankryžose naudok posūkių signalus.',
+                ),
+                'updates' => array(
+                    '^7Dienos topas atsinaujina vidurnaktį.',
+                    '^7Aplankyk banką atlyginimui atsiimti.',
+                    '^7Policija patruliuoja mieste.',
+                ),
+            ),
+        );
+    }
+
+    private function loadWelcomeStrings(array $languageFiles, array $base): array
+    {
+        $result = $base;
+
+        foreach ($languageFiles as $code => $file) {
+            if (!is_string($file) || trim($file) === '') {
+                continue;
+            }
+
+            $code = strtolower(trim((string)$code));
+            if ($code === '') {
+                continue;
+            }
+
+            $path = $this->resolveConfigPath($file);
+            if ($path === '' || !is_file($path)) {
+                continue;
+            }
+
+            $data = parse_ini_file($path, true, INI_SCANNER_RAW);
+            if (!is_array($data)) {
+                continue;
+            }
+
+            if (!isset($result[$code])) {
+                $result[$code] = $result['en'] ?? array();
+            }
+
+            $result[$code] = $this->mergeWelcomeLanguageData($result[$code], $data);
+        }
+
+        return $result;
+    }
+
+    private function mergeWelcomeLanguageData(array $base, array $data): array
+    {
+        if (isset($data['welcome']) && is_array($data['welcome'])) {
+            foreach ($data['welcome'] as $key => $value) {
+                if (is_string($value) && $value !== '') {
+                    $base[$key] = $value;
+                }
+            }
+        }
+
+        if (isset($data['welcome.language_buttons']) && is_array($data['welcome.language_buttons'])) {
+            $buttons = array();
+            if (isset($base['language_buttons']) && is_array($base['language_buttons'])) {
+                $buttons = $base['language_buttons'];
+            }
+            foreach ($data['welcome.language_buttons'] as $key => $value) {
+                if (is_string($value) && $value !== '') {
+                    $buttons[$key] = $value;
+                }
+            }
+            if (!empty($buttons)) {
+                $base['language_buttons'] = $buttons;
+            }
+        }
+
+        if (isset($data['welcome.rules']) && is_array($data['welcome.rules'])) {
+            $lines = $data['welcome.rules']['line'] ?? ($data['welcome.rules']['rules'] ?? $data['welcome.rules']);
+            $base['rules'] = $this->normaliseTextArray($lines, $base['rules'] ?? array());
+        }
+
+        if (isset($data['welcome.updates']) && is_array($data['welcome.updates'])) {
+            $lines = $data['welcome.updates']['line'] ?? ($data['welcome.updates']['updates'] ?? $data['welcome.updates']);
+            $base['updates'] = $this->normaliseTextArray($lines, $base['updates'] ?? array());
+        }
+
+        return $base;
+    }
+
+    private function resolveConfigPath(string $path): string
+    {
+        $path = trim($path);
+        if ($path === '') {
+            return '';
+        }
+
+        if (preg_match("/^[A-Za-z]:[\\\\\/]/", $path) === 1 || $path[0] === '/' || $path[0] === '\\') {
+            return $path;
+        }
+
+        if (defined('ROOTPATH')) {
+            return rtrim(ROOTPATH, '/\\') . '/' . ltrim($path, '/\\');
+        }
+
+        return $path;
     }
 
     private function normaliseTextArray($value, array $fallback): array

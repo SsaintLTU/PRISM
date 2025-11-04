@@ -1129,6 +1129,10 @@ class serverModes extends Plugins
                 'speed_limit' => 0,
                 'penalty_multiplier' => 0.5,
                 'ui' => array(
+                    'welcome_languages' => array(
+                        'en' => 'configs/lang_en.ini',
+                        'lt' => 'configs/lang_lt.ini',
+                    ),
                     'welcome' => array(
                         'server_name' => 'Cruise City',
                         'title_en' => '^3Welcome to %s',
