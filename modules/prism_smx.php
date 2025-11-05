@@ -54,11 +54,11 @@ class SMX
 
     protected function readObject(&$offset)
     {
-        return new Object($offset, $this->file);
+        return new SMXObject($offset, $this->file);
     }
 }
 
-class Object
+class SMXObject
 {
     const CENTER = 'VX/VY/VZ';
     const OBJECT = 'VRadius/VPoints/VTriangles';
@@ -73,10 +73,10 @@ class Object
     public function __construct(&$offset, $file)
     {
         # Center
-        $this->Center = unpack(Object::CENTER, substr($file, $offset, 12));
+        $this->Center = unpack(self::CENTER, substr($file, $offset, 12));
         $offset += 12;
         # Object
-        $Object = unpack(Object::OBJECT, substr($file, $offset, 12));
+        $Object = unpack(self::OBJECT, substr($file, $offset, 12));
 
         foreach ($Object as $property => $value) {
             $this->$property = $value;
@@ -86,12 +86,12 @@ class Object
 
         # Point
         for ($i = 0, $Points = $this->Points, $this->Points = array(); $i < $Points; ++$i, $offset += 16) {
-            $this->Points[$i] = unpack(Object::POINT, substr($file, $offset, 16));
+            $this->Points[$i] = unpack(self::POINT, substr($file, $offset, 16));
         }
 
         # Triangle
         for ($i = 0, $Triangles = $this->Triangles, $this->Triangles = array(); $i < $Triangles; ++$i, $offset += 8) {
-            $this->Triangles[$i] = unpack(Object::TRIANGLE, substr($file, $offset, 8));
+            $this->Triangles[$i] = unpack(self::TRIANGLE, substr($file, $offset, 8));
         }
     }
 }
